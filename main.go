@@ -151,7 +151,7 @@ func main() {
 	relay.OnRequest = policies.SeqRequest(
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
-		policies.FilterIPRateLimiter(20, time.Minute, 100),
+		// policies.FilterIPRateLimiter(20, time.Minute, 100),
 		func(ctx context.Context, filter nostr.Filter) (bool, string) {
 			if filter.Tags["h"] != nil {
 				// nip29 logic
@@ -177,7 +177,7 @@ func main() {
 			return rejectInviteRequestsNonAuthed(ctx, filter)
 		},
 	)
-	relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 30)
+	// relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 30)
 	relay.OnEvent = func(ctx context.Context, event nostr.Event) (reject bool, msg string) {
 		if len(event.Content) > 10_000 {
 			return true, "content is too big"
