@@ -277,7 +277,7 @@ func main() {
 		info.Limitation = &nip11.RelayLimitationDocument{
 			RestrictedWrites: true,
 		}
-		info.Software = "https://github.com/fiatjaf/pyramid"
+		info.Software = "https://github.com/Sebastix/inner.sebastix.social/tree/inner.sebastix.social"
 		return info
 	}
 
