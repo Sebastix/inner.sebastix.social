@@ -21,22 +21,36 @@ type UserSettings struct {
 
 	// theme
 	Theme struct {
-		BackgroundColor string `json:"background_color"`
-		TextColor       string `json:"text_color"`
-		AccentColor     string `json:"accent_color"`
+		BackgroundColor          string `json:"background_color"`
+		TextColor                string `json:"text_color"`
+		AccentColor              string `json:"accent_color"`
+		SecondaryBackgroundColor string `json:"secondary_background_color"`
+		ExtraColor               string `json:"extra_color"`
+		BaseColor                string `json:"base_color"`
+		HeaderTransparency       string `json:"header_transparency"`
+		PrimaryFont              string `json:"primary_font"`
+		SecondaryFont            string `json:"secondary_font"`
 	} `json:"theme"`
 
 	// general
 	BrowseURI               string `json:"browse_uri"`
 	LinkURL                 string `json:"link_url"`
 	MaxInvitesPerPerson     int    `json:"max_invites_per_person"`
+	MaxEventSize            int    `json:"max_event_size"`
 	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
+	EnableOTS               bool   `json:"enable_ots"`
+	AcceptScheduledEvents   bool   `json:"accept_future_events"`
 
 	Paywall struct {
 		Tag        string `json:"tag"`
 		AmountSats uint   `json:"amount_sats"`
 		PeriodDays uint   `json:"period_days"`
 	} `json:"paywall"`
+
+	NIP05 struct {
+		Enabled bool                    `json:"enabled"`
+		Names   map[string]nostr.PubKey `json:"names"`
+	} `json:"nip05"`
 
 	RelayInternalSecretKey nostr.SecretKey `json:"relay_internal_secret_key"`
 
@@ -65,6 +79,10 @@ type UserSettings struct {
 	Grasp struct {
 		Enabled bool `json:"enabled"`
 	} `json:"grasp"`
+
+	Blossom struct {
+		Enabled bool `json:"enabled"`
+	} `json:"blossom"`
 
 	Popular struct {
 		RelayMetadata
@@ -113,7 +131,7 @@ func (rm RelayMetadata) GetDescription() string {
 	case "favorites":
 		return "relay members can manually republish notes here and they'll be saved."
 	case "inbox":
-		return "filtered notifications for relay members using unified web of trust filtering. only see mentions from people in the combined relay extended network."
+		return "filtered notifications for relay members using unified web-of-trust filtering. only see mentions from people in the combined relay extended network."
 	case "popular":
 		return "auto-curated popular posts from relay members. this is a read-only relay where events are automatically fetched from other relays and saved based reactions, replies, favorites and zaps created by members."
 	case "uppermost":
@@ -153,7 +171,10 @@ func (us UserSettings) HasThemeColors() bool {
 	/* #000000 is the default value when submitting a blank <input type="color"> */
 	us.Theme.BackgroundColor == "#000000" &&
 		us.Theme.AccentColor == "#000000" &&
-		us.Theme.TextColor == "#000000")
+		us.Theme.TextColor == "#000000" &&
+		us.Theme.SecondaryBackgroundColor == "#000000" &&
+		us.Theme.ExtraColor == "#000000" &&
+		us.Theme.BaseColor == "#000000")
 }
 
 func (us UserSettings) GetExternalLink(pointer nostr.Pointer) string {
@@ -167,12 +188,15 @@ func getUserSettingsPath() string {
 func loadUserSettings() error {
 	// start it with the defaults
 	Settings = UserSettings{
-		BrowseURI:               "https://fevela.me/?r=__URL__",
+		BrowseURI:               "https://fevela.me/?r={url}",
 		LinkURL:                 "nostr:{code}",
 		MaxInvitesPerPerson:     4,
+		MaxEventSize:            10000,
 		RequireCurrentTimestamp: true,
+		EnableOTS:               true,
 		BlockedIPs:              []string{},
 	}
+
 	Settings.Inbox.Enabled = true
 	Settings.Internal.Enabled = true
 	Settings.Favorites.Enabled = true
@@ -186,12 +210,25 @@ func loadUserSettings() error {
 	Settings.Uppermost.HTTPBasePath = "uppermost"
 	Settings.Moderated.HTTPBasePath = "moderated"
 
+	// theme defaults
+	Settings.Theme.TextColor = "#ffffff"
+	Settings.Theme.SecondaryBackgroundColor = "#ffffff"
+	Settings.Theme.ExtraColor = "#059669"
+	Settings.Theme.BaseColor = "#000000"
+	Settings.Theme.HeaderTransparency = "100"
+	Settings.Theme.PrimaryFont = "Open Sans"
+	Settings.Theme.SecondaryFont = ""
+
+	// http base paths
 	Settings.Inbox.base = "inbox"
 	Settings.Internal.base = "internal"
 	Settings.Favorites.base = "favorites"
 	Settings.Popular.base = "popular"
 	Settings.Uppermost.base = "uppermost"
 	Settings.Moderated.base = "moderated"
+
+	// nip05
+	Settings.NIP05.Names = make(map[string]nostr.PubKey)
 
 	path := getUserSettingsPath()
 	os.MkdirAll(filepath.Dir(path), 0700)
@@ -218,6 +255,9 @@ func loadUserSettings() error {
 	if err := json.Unmarshal(data, &Settings); err != nil {
 		return err
 	}
+
+	// temporary: replace {url} in settings
+	Settings.BrowseURI = strings.ReplaceAll(Settings.BrowseURI, "__URL__", "{url}")
 
 	return nil
 }

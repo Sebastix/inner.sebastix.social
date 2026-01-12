@@ -31,8 +31,8 @@ func Init(relay *khatru.Relay) {
 
 func setupDisabled() {
 	Handler.mux = http.NewServeMux()
-	Handler.mux.HandleFunc("POST /enable", enableHandler)
-	Handler.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	Handler.mux.HandleFunc("POST /groups/enable", enableHandler)
+	Handler.mux.HandleFunc("/groups/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		homeGroupsPage(loggedUser).Render(r.Context(), w)
 	})
@@ -49,8 +49,9 @@ func setupEnabled() {
 
 	Handler.mux = http.NewServeMux()
 
-	Handler.mux.HandleFunc("POST /disable", disableHandler)
-	Handler.mux.HandleFunc("/{groupId}", func(w http.ResponseWriter, r *http.Request) {
+	Handler.mux.HandleFunc("POST /groups/disable", disableHandler)
+	Handler.mux.HandleFunc("POST /groups/wipe/{groupId}", wipeGroupHandler)
+	Handler.mux.HandleFunc("/groups/{groupId}", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		groupId := r.PathValue("groupId")
 
@@ -77,7 +78,7 @@ func setupEnabled() {
 		groupDetailPage(loggedUser, group, events).Render(r.Context(), w)
 	})
 
-	Handler.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	Handler.mux.HandleFunc("/groups/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		homeGroupsPage(loggedUser).Render(r.Context(), w)
 	})
@@ -118,6 +119,28 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupDisabled()
+	http.Redirect(w, r, "/groups/", 302)
+}
+
+func wipeGroupHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	groupId := r.PathValue("groupId")
+	if groupId == "" {
+		http.Error(w, "group id required", 400)
+		return
+	}
+
+	if err := State.WipeGroup(groupId); err != nil {
+		http.Error(w, "failed to wipe group: "+err.Error(), 500)
+		return
+	}
+
 	http.Redirect(w, r, "/groups/", 302)
 }
 

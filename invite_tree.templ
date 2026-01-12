@@ -8,7 +8,7 @@ import (
 	"github.com/fiatjaf/pyramid/pyramid"
 )
 
-templ inviteTreePage(loggedUser nostr.PubKey) {
+templ inviteTreePage(loggedUser nostr.PubKey, nip05Names map[nostr.PubKey]string) {
 	@layout.Layout(loggedUser, "invite-tree") {
 		<div class="max-w-3xl mx-auto">
 			if pyramid.CanInviteMore(loggedUser) {
@@ -18,23 +18,18 @@ templ inviteTreePage(loggedUser nostr.PubKey) {
 					class="flex items-center gap-3 mb-6"
 				>
 					<label
-						class="text-sm font-medium"
-						if global.Settings.HasThemeColors() {
-							class="text-[var(--text-color)]"
-						} else {
-							class="text-gray-700 dark:text-gray-300"
-						}
+						class="font-medium themed:text-[var(--extra-color)] light:text-gray-700 dark:text-gray-300"
 					>invite new member: </label>
 					<input
 						type="text"
 						name="target"
 						placeholder="npub1..."
-						class="flex-1 rounded-lg border-0 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 dark:bg-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-blue-600 dark:focus:ring-blue-400"
+						class="flex-1 rounded-lg border-0 px-3 py-1.5 text-sm bg-white text-gray-900 dark:text-gray-100 dark:bg-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-blue-600 dark:focus:ring-blue-400"
 					/>
 					<input type="hidden" name="type" value="invite"/>
 					<button
 						type="submit"
-						class="rounded-lg px-4 py-1.5 text-sm font-semibold text-white shadow-lg transform hover:scale-105 bg-stone-600 hover:bg-stone-700 dark:bg-stone-500 dark:hover:bg-stone-600"
+						class="cursor-pointer rounded-lg px-4 py-1.5 text-sm font-semibold text-white shadow-lg transform hover:scale-105 themed:bg-[var(--extra-color)] themed:hover:bg-[rgb(from_var(--extra-color)_r_g_b_/_80%)] light:bg-stone-600 light:hover:bg-stone-700 dark:bg-stone-500 dark:hover:bg-stone-600"
 					>
 						invite
 					</button>
@@ -47,38 +42,33 @@ templ inviteTreePage(loggedUser nostr.PubKey) {
 					class="text-gray-700 dark:text-gray-300"
 				}
 			>
-				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false)
+				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false, nip05Names)
 			</div>
 		</div>
 	}
 }
 
-templ inviteTreeComponent(curr nostr.PubKey, loggedUser nostr.PubKey, isAncestorOfLoggedUser bool) {
+templ inviteTreeComponent(
+	curr nostr.PubKey,
+	loggedUser nostr.PubKey,
+	isAncestorOfLoggedUser bool,
+	nip05Names map[nostr.PubKey]string,
+) {
 	<ul>
 		for child := range pyramid.GetChildren(curr) {
 			<li class="ml-6 py-1 group">
 				<div class="flex items-center gap-2">
 					<span
 						if global.Settings.HasThemeColors() {
-							class="text-gray-700 hover:text-gray-500"
+							class="text-[var(--base-color)] hover:text-[rgb(from_var(--base-color)_r_g_b_/_40%)]"
 						} else {
 							class="text-gray-700 dark:text-gray-300 hover:text-gray-500 dark:hover:text-gray-400"
 						}
 					>
-						<a
-							href={ templ.URL(global.Settings.GetExternalLink(nostr.ProfilePointer{PublicKey: child})) }
-							target="_blank"
-							class="font-mono text-sm"
-						>
-							<nostr-name pubkey={ child.Hex() } class="text-lg">{ child.Hex() }</nostr-name>
-						</a>
+						@layout.ProfileLink(child)
 						if pyramid.IsRoot(child) {
 							<span
-								class={
-									"cursor-default ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium",
-									templ.KV("bg-[var(--accent-color)] text-white", global.Settings.HasThemeColors()),
-									templ.KV("bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-500/20", !global.Settings.HasThemeColors()),
-								}
+								class="cursor-default ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium themed:bg-[var(--accent-color)] themed:text-white light:bg-blue-50 light:text-blue-700 light:ring-1 light:ring-inset light:ring-blue-600/20 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-500/20"
 							>
 								root
 							</span>
@@ -91,14 +81,19 @@ templ inviteTreeComponent(curr nostr.PubKey, loggedUser nostr.PubKey, isAncestor
 							<button
 								type="submit"
 								onclick="return confirm('really drop this user and its descendants?')"
-								class="opacity-40 hover:opacity-100 rounded-lg text-xs font-semibold px-3 py-1 bg-gray-500/10 hover:bg-red-500/10 hover:text-red-500 text-gray-600 dark:text-gray-400"
+								class="cursor-pointer opacity-40 hover:opacity-100 rounded-lg text-xs font-semibold px-3 py-1 bg-gray-500/10 hover:bg-red-500/10 hover:text-red-500 text-gray-600 dark:text-gray-400"
 							>
 								drop
 							</button>
 						</form>
 					}
+					if name, exists := nip05Names[child]; exists {
+						<div class="inline-flex items-center border rounded-md px-1 text-xs opacity-70 hover:opacity-100">
+							{ name }{ "@" }{ global.Settings.Domain }
+						</div>
+					}
 				</div>
-				@inviteTreeComponent(child, loggedUser, isAncestorOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr))
+				@inviteTreeComponent(child, loggedUser, isAncestorOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr), nip05Names)
 			</li>
 		}
 	</ul>

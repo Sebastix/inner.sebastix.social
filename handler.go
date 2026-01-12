@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 	"strings"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore/mmm"
+	"fiatjaf.com/nostr/nip05"
+	"fiatjaf.com/nostr/nip19"
 
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
@@ -25,7 +29,14 @@ import (
 
 func inviteTreeHandler(w http.ResponseWriter, r *http.Request) {
 	loggedUser, _ := global.GetLoggedUser(r)
-	inviteTreePage(loggedUser).Render(r.Context(), w)
+	var nip05Names map[nostr.PubKey]string
+	if global.Settings.NIP05.Enabled {
+		nip05Names = make(map[nostr.PubKey]string, pyramid.Members.Size())
+		for name, pubkey := range global.Settings.NIP05.Names {
+			nip05Names[pubkey] = name
+		}
+	}
+	inviteTreePage(loggedUser, nip05Names).Render(r.Context(), w)
 }
 
 func actionHandler(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +50,7 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 		type_ = pyramid.ActionLeave
 	}
 	author, _ := global.GetLoggedUser(r)
-	target := pubkeyFromInput(r.PostFormValue("target"))
+	target := global.PubKeyFromInput(r.PostFormValue("target"))
 
 	if err := pyramid.AddAction(type_, author, target); err != nil {
 		http.Error(w, err.Error(), 403)
@@ -50,42 +61,8 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", 302)
 }
 
-// this deletes all events from users not in the relay anymore
-func cleanupStuffFromExcludedUsersHandler(w http.ResponseWriter, r *http.Request) {
-	loggedUser, _ := global.GetLoggedUser(r)
-
-	if !pyramid.IsRoot(loggedUser) {
-		http.Error(w, "unauthorized, only the relay owner can do this", 403)
-		return
-	}
-
-	count := 0
-	for evt := range global.IL.Main.QueryEvents(nostr.Filter{}, 99999999) {
-		if pyramid.IsMember(evt.PubKey) {
-			continue
-		}
-
-		if err := global.IL.Main.DeleteEvent(evt.ID); err != nil {
-			http.Error(w, fmt.Sprintf(
-				"failed to delete %s: %s -- stopping, %d events were deleted before this error", evt, err, count), 500)
-			return
-		}
-		count++
-	}
-
-	fmt.Fprintf(w, "deleted %d events", count)
-}
-
-func reportsViewerHandler(w http.ResponseWriter, r *http.Request) {
-	loggedUser, _ := global.GetLoggedUser(r)
-
-	events := global.IL.Main.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{1984}}, 52)
-	reportsPage(events, loggedUser).Render(r.Context(), w)
-}
-
 func settingsHandler(w http.ResponseWriter, r *http.Request) {
 	loggedUser, _ := global.GetLoggedUser(r)
-
 	if !pyramid.IsRoot(loggedUser) {
 		http.Error(w, "unauthorized", 403)
 		return
@@ -112,6 +89,18 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.Theme.TextColor = v[0]
 			case "accent_color":
 				global.Settings.Theme.AccentColor = v[0]
+			case "secondary_background_color":
+				global.Settings.Theme.SecondaryBackgroundColor = v[0]
+			case "extra_color":
+				global.Settings.Theme.ExtraColor = v[0]
+			case "base_color":
+				global.Settings.Theme.BaseColor = v[0]
+			case "header_transparency":
+				global.Settings.Theme.HeaderTransparency = v[0]
+			case "primary_font":
+				global.Settings.Theme.PrimaryFont = v[0]
+			case "secondary_font":
+				global.Settings.Theme.SecondaryFont = v[0]
 				//
 				// general settings
 			case "max_invites_per_person":
@@ -122,6 +111,10 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.LinkURL = v[0]
 			case "require_current_timestamp":
 				global.Settings.RequireCurrentTimestamp = v[0] == "on"
+			case "enable_ots":
+				global.Settings.EnableOTS = v[0] == "on"
+			case "accept_future_events":
+				global.Settings.AcceptScheduledEvents = v[0] == "on"
 			case "paywall_tag":
 				global.Settings.Paywall.Tag = v[0]
 			case "paywall_amount":
@@ -132,6 +125,10 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				if days, err := strconv.ParseUint(v[0], 10, 64); err == nil {
 					global.Settings.Paywall.PeriodDays = uint(days)
 				}
+				//
+				// nip-05 settings
+			case "nip05_enabled":
+				global.Settings.NIP05.Enabled = v[0] == "on"
 				//
 				// basic metadata of all relays
 			case "main_name":
@@ -248,7 +245,7 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 					if s == "" {
 						continue
 					}
-					pk := pubkeyFromInput(s)
+					pk := global.PubKeyFromInput(s)
 					if pk != nostr.ZeroPK && !slices.Contains(blocked, pk) {
 						blocked = append(blocked, pk)
 					}
@@ -483,7 +480,7 @@ func rootUserSetupHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		pubkeyStr := r.PostFormValue("pubkey")
-		target := pubkeyFromInput(pubkeyStr)
+		target := global.PubKeyFromInput(pubkeyStr)
 
 		if target == nostr.ZeroPK {
 			http.Error(w, "invalid public key", 400)
@@ -500,6 +497,28 @@ func rootUserSetupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rootUserSetupPage().Render(r.Context(), w)
+}
+
+func updateHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		// if the update is successful the process will restart so this function will never return
+		if err := performUpdateInPlace(); err != nil {
+			log.Error().Err(err).Msg("update failed")
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// if we reach here, the update failed to restart
+		http.Error(w, "unexpected: update done, but couldn't restart the server (or something else)", 500)
+		return
+	}
 }
 
 func forumHandler(w http.ResponseWriter, r *http.Request) {
@@ -526,4 +545,129 @@ func forumHandler(w http.ResponseWriter, r *http.Request) {
   <script src="https://cdn.jsdelivr.net/npm/relay-forum@0.0.2/dist/index.js"></script>
 </html>
 `)
+}
+
+func memberPageHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, isLogged := global.GetLoggedUser(r)
+
+	if r.Method == http.MethodPost {
+		if nip05Username := r.PostFormValue("nip05_username"); nip05Username != "" {
+			// basic validation for NIP-05 username (alphanumeric and underscores only)
+			nip05Username = strings.ToLower(nip05Username)
+			if !regexp.MustCompile(`^[a-z0-9_]+$`).MatchString(nip05Username) {
+				http.Error(w, "invalid username: only letters, numbers, and underscores are allowed", 400)
+				return
+			}
+
+			// check if this name is already being used
+			if _, inUse := global.Settings.NIP05.Names[nip05Username]; inUse {
+				http.Error(w, "username already taken", 400)
+				return
+			}
+
+			// clear the previous username for this user
+			for name, pubkey := range global.Settings.NIP05.Names {
+				if pubkey == loggedUser {
+					delete(global.Settings.NIP05.Names, name)
+				}
+			}
+
+			// add this new name
+			global.Settings.NIP05.Names[nip05Username] = loggedUser
+
+			// save
+			global.SaveUserSettings()
+		}
+
+		if strings.Contains(r.Header.Get("Accept"), "text/html") {
+			http.Redirect(w, r, r.Header.Get("Referer"), 302)
+		}
+		return
+	}
+
+	var user nostr.PubKey
+
+	pubkeyHex := r.PathValue("pubkey")
+	if pubkeyHex == "" && isLogged {
+		http.Redirect(w, r, "/u/"+nip19.EncodeNpub(loggedUser), 302)
+		return
+	} else if pubkeyHex != "" {
+		user = global.PubKeyFromInput(pubkeyHex)
+		if user == nostr.ZeroPK {
+			http.Error(w, "invalid pubkey", 400)
+			return
+		}
+	} else {
+		http.Redirect(w, r, "/", 302)
+		return
+	}
+
+	var nip05 string
+	for name, pubkey := range global.Settings.NIP05.Names {
+		if pubkey == loggedUser {
+			nip05 = name
+			break
+		}
+	}
+
+	// compute user-specific stats
+	var mainStats mmm.EventStats
+	if pyramid.IsMember(loggedUser) {
+		mainStats, _ = global.IL.Main.ComputeStats(mmm.StatsOptions{OnlyPubKey: user})
+	}
+
+	memberPage(loggedUser, user, nip05, mainStats).Render(r.Context(), w)
+}
+
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsMember(loggedUser) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// compute stats for all IndexingLayer instances
+	mainStats, _ := global.IL.Main.ComputeStats(mmm.StatsOptions{})
+	systemStats, _ := global.IL.System.ComputeStats(mmm.StatsOptions{})
+	groupsStats, _ := global.IL.Groups.ComputeStats(mmm.StatsOptions{})
+	favoritesStats, _ := global.IL.Favorites.ComputeStats(mmm.StatsOptions{})
+	internalStats, _ := global.IL.Internal.ComputeStats(mmm.StatsOptions{})
+	moderatedStats, _ := global.IL.Moderated.ComputeStats(mmm.StatsOptions{})
+	popularStats, _ := global.IL.Popular.ComputeStats(mmm.StatsOptions{})
+	uppermostStats, _ := global.IL.Uppermost.ComputeStats(mmm.StatsOptions{})
+	inboxStats, _ := global.IL.Inbox.ComputeStats(mmm.StatsOptions{})
+
+	StatsPage(loggedUser, mainStats, systemStats, groupsStats, favoritesStats, internalStats, moderatedStats, popularStats, uppermostStats, inboxStats).Render(r.Context(), w)
+}
+
+func syncHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+	if !pyramid.IsMember(loggedUser) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	remoteUrl := r.FormValue("remote")
+	download := r.FormValue("download") == "on"
+	upload := r.FormValue("upload") == "on"
+
+	streamingSync(r.Context(), loggedUser, remoteUrl, download, upload, w)
+}
+
+func nip05Handler(w http.ResponseWriter, r *http.Request) {
+	resp := nip05.WellKnownResponse{
+		Names: global.Settings.NIP05.Names,
+	}
+
+	specifiedNames := r.URL.Query()["name"]
+	if len(specifiedNames) > 0 {
+		resp.Relays = make(map[nostr.PubKey][]string, len(specifiedNames))
+	}
+	for _, name := range specifiedNames {
+		if pk, ok := global.Settings.NIP05.Names[name]; ok {
+			resp.Relays[pk] = []string{global.Settings.WSScheme() + global.Settings.Domain}
+		}
+	}
+	json.NewEncoder(w).Encode(resp)
 }

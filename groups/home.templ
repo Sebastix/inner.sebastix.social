@@ -19,6 +19,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 				description: "",
 				imageUrl: "",
 				closed: false,
+				unrestricted: true,
 				private: false,
 				creating: false,
 				groupsRelayURL: window.location.href
@@ -62,7 +63,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 								...(this.description ? [["about", this.description]] : []),
 								...(this.imageUrl ? [["picture", this.imageUrl]] : []),
 								...(this.closed ? [["closed"]] : []),
-								["restricted"],
+								...(this.unrestricted ? [] : [["restricted"]]),
 								...(this.private ? [["private"], ["hidden"]] : [])
 							],
 							content: ""
@@ -77,24 +78,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 						this.creating = false
 					}
 				},
-				async deleteGroup(groupId, groupName) {
-					if (!confirm("are you sure you want to delete group \"" + groupName + "\"?")) return;
-					try {
-						await this.publishEvent(await window.nostr.signEvent({
-							kind: 9008,
-							created_at: Math.floor(Date.now() / 1000),
-							tags: [
-								["h", groupId]
-							],
-							content: ""
-						}));
-						alert("group deleted successfully!");
-						window.location.reload();
-					} catch (error) {
-						console.error("Error deleting group:", error);
-						alert("failed to delete group: " + error.message);
-					}
-				},
+
 				async publishEvent(event) {
 					return new Promise((resolve, reject) => {
 						const ws = new WebSocket(this.groupsRelayURL)
@@ -151,7 +135,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 				}
 			}` }
 		>
-			<h1 class="text-4xl font-bold mb-4">groups</h1>
+			<h1 class="text-4xl font-bold mb-4 font-[family-name:var(--primary-font)]">groups</h1>
 			<div class="space-y-4 text-gray-700 dark:text-gray-300">
 				<p class="text-lg leading-relaxed">
 					NIP-29: moderated group chat functionality.
@@ -168,14 +152,14 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							<table class="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
 								<thead class="bg-stone-50 dark:bg-stone-800">
 									<tr>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">group id</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">group</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">members</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">moderators</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">closed</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">hidden</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">private</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider"></th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group id</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">members</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">moderators</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">restricted</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">closed</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">hidden</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">private</th>
 									</tr>
 								</thead>
 								<tbody class="bg-white dark:bg-stone-900 divide-y divide-stone-200 dark:divide-stone-700">
@@ -208,7 +192,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														for pubkey, roles := range group.Members {
 															if len(roles) > 0 {
 																<div class="flex items-center gap-2">
-																	<nostr-name pubkey={ pubkey.Hex() } class="text-stone-700 dark:text-stone-300">{ pubkey.Hex() }</nostr-name>
+																	@layout.ProfileLink(pubkey)
 																	<span class="text-xs text-stone-500 dark:text-stone-500">
 																		(
 																		for i, role := range roles {
@@ -223,6 +207,13 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 															}
 														}
 													</div>
+												</td>
+												<td class="px-4 py-3 text-sm text-center">
+													if group.Restricted {
+														☑
+													} else {
+														☐
+													}
 												</td>
 												<td class="px-4 py-3 text-sm text-center">
 													if group.Closed {
@@ -245,16 +236,6 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														☐
 													}
 												</td>
-												<td class="px-4 py-3 text-sm text-center">
-													if group.IsPrimaryRole(loggedUser) || pyramid.IsRoot(loggedUser) {
-														<button
-															@click={ "deleteGroup('" + group.Address.ID + "', '" + group.Name + "')" }
-															class="px-2 py-1 text-xs bg-red-500 hover:bg-red-600 text-white rounded"
-														>
-															delete
-														</button>
-													}
-												</td>
 											</tr>
 										}
 									}
@@ -271,13 +252,14 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							<table class="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
 								<thead class="bg-stone-50 dark:bg-stone-800">
 									<tr>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">group id</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">group</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">members</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">moderators</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">closed</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider">private</th>
-										<th class="px-4 py-3 text-xs font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider"></th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group id</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">members</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">moderators</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">restricted</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">closed</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">hidden</th>
+										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">private</th>
 									</tr>
 								</thead>
 								<tbody class="bg-white dark:bg-stone-900 divide-y divide-stone-200 dark:divide-stone-700">
@@ -303,7 +285,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														for pubkey, roles := range group.Members {
 															if len(roles) > 0 {
 																<div class="flex items-center gap-2">
-																	<nostr-name pubkey={ pubkey.Hex() } class="text-stone-700 dark:text-stone-300">{ pubkey.Hex() }</nostr-name>
+																	@layout.ProfileLink(pubkey)
 																	<span class="text-xs text-stone-500 dark:text-stone-500">
 																		(
 																		for i, role := range roles {
@@ -320,7 +302,21 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 													</div>
 												</td>
 												<td class="px-4 py-3 text-sm text-center">
+													if group.Restricted {
+														☑
+													} else {
+														☐
+													}
+												</td>
+												<td class="px-4 py-3 text-sm text-center">
 													if group.Closed {
+														☑
+													} else {
+														☐
+													}
+												</td>
+												<td class="px-4 py-3 text-sm text-center">
+													if group.Hidden {
 														☑
 													} else {
 														☐
@@ -331,16 +327,6 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														☑
 													} else {
 														☐
-													}
-												</td>
-												<td class="px-4 py-3 text-sm text-center">
-													if group.IsPrimaryRole(loggedUser) || pyramid.IsRoot(loggedUser) {
-														<button
-															@click={ "deleteGroup('" + group.Address.ID + "', '" + group.Name + "')" }
-															class="px-2 py-1 text-xs bg-red-500 hover:bg-red-600 text-white rounded"
-														>
-															delete
-														</button>
 													}
 												</td>
 											</tr>
@@ -402,6 +388,18 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 								<div class="flex items-center">
 									<input
 										type="checkbox"
+										id="group_restricted"
+										name="unrestricted"
+										x-model="unrestricted"
+										class="h-4 w-4 rounded border-stone-300 text-stone-600 focus:ring-stone-500"
+									/>
+									<label for="group_restricted" class="ml-2 text-sm text-stone-700 dark:text-stone-300">
+										unrestricted (relay members can publish without explicitly joining)
+									</label>
+								</div>
+								<div class="flex items-center">
+									<input
+										type="checkbox"
 										id="group_closed"
 										name="closed"
 										x-model="closed"
@@ -428,7 +426,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							</div>
 							<button
 								type="submit"
-								class="px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+								class="cursor-pointer px-4 py-2 rounded themed:bg-[var(--extra-color)] themed:hover:bg-[rgb(from_var(--extra-color)_r_g_b_/_80%)] themed:text-white light:bg-stone-200 light:hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
 								:disabled="creating"
 							>
 								create group
@@ -444,7 +442,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 						<form method="POST" action="/groups/enable">
 							<button
 								type="submit"
-								class="px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+								class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
 							>
 								enable
 							</button>
@@ -455,7 +453,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							<form class="my-4" method="POST" action="/groups/disable">
 								<button
 									type="submit"
-									class="px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+									class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
 								>
 									disable
 								</button>

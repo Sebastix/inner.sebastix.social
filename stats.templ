@@ -1,0 +1,87 @@
+package main
+
+import (
+	"fmt"
+
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore/mmm"
+	"github.com/fiatjaf/pyramid/layout"
+)
+
+templ StatsPage(
+	loggedUser nostr.PubKey,
+	mainStats,
+	systemStats,
+	groupsStats,
+	favoritesStats,
+	internalStats,
+	moderatedStats,
+	popularStats,
+	uppermostStats,
+	inboxStats mmm.EventStats,
+) {
+	@layout.Layout(loggedUser, "stats") {
+		<div class="space-y-8">
+			<div>
+				@layout.SubSectionTitle("event statistics")
+				@statsTable("main", mainStats)
+				@statsTable("inbox", inboxStats)
+				@statsTable("groups", groupsStats)
+				@statsTable("popular", popularStats)
+				@statsTable("uppermost", uppermostStats)
+				@statsTable("favorites", favoritesStats)
+				@statsTable("moderated", moderatedStats)
+				@statsTable("internal", internalStats)
+				@statsTable("system", systemStats)
+			</div>
+		</div>
+	}
+}
+
+templ statsTable(name string, stats mmm.EventStats) {
+	<div class="mb-4 bg-white dark:bg-stone-800 rounded-lg shadow-md p-6 border border-stone-200 dark:border-stone-700">
+		<h3 class="text-xl font-semibold mb-4">{ name }</h3>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+			<h4 class="font-medium mb-2 col-span-2">total events: { fmt.Sprintf("%d", stats.Total) }</h4>
+			{{ topKinds, top5Kinds := getTopKinds(stats.PerKind, 30, 5) }}
+			if len(topKinds) > 0 {
+				<div>
+					<h4 class="font-medium">by kind:</h4>
+					<table class="w-full text-sm">
+						<tbody>
+							for _, kindInfo := range topKinds {
+								<tr class="border-b border-stone-100 dark:border-stone-800">
+									<td class="py-1">{ fmt.Sprintf("%d", kindInfo.Kind) }</td>
+									<td class="text-right py-1">{ fmt.Sprintf("%d", kindInfo.Count) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+			{{ topAuthors := getTopAuthors(stats.PerPubKey, 30) }}
+			if len(topAuthors) > 0 {
+				<div>
+					<h4 class="font-medium">by author:</h4>
+					<table class="w-full text-sm">
+						<tbody>
+							for _, authorInfo := range topAuthors {
+								<tr class="border-b border-stone-100 dark:border-stone-800">
+									<td class="py-1 font-mono text-xs">
+										@layout.ProfileLink(authorInfo.Author)
+									</td>
+									<td class="text-right py-1">{ fmt.Sprintf("%d", authorInfo.Count) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		</div>
+		if len(stats.PerWeek) > 0 {
+			<div class="mt-6">
+				@generateWeeklyChart(stats, top5Kinds, name)
+			</div>
+		}
+	</div>
+}
