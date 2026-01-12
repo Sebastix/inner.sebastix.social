@@ -3,6 +3,7 @@ pyramid/pyramid
 pyramid-exe
 pyramid-bin
 pyramid-old-binary
+pyramid-*
 management.jsonl
 settings.json
 .env
@@ -10,3 +11,4 @@ db
 *_templ.go
 data
 node_modules
+.idea
