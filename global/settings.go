@@ -110,6 +110,11 @@ type UserSettings struct {
 		MaxUserUploadSizeAtEachLevel []int `json:"max_user_upload_size_at_each_level,omitempty"`
 	} `json:"blossom"`
 
+	Stream struct {
+		Enabled bool   `json:"enabled"`
+		Salt    string `json:"salt"`
+	} `json:"stream"`
+
 	Popular struct {
 		RelayMetadata
 		PercentThreshold int `json:"percent_threshold"`
@@ -274,6 +279,9 @@ func loadUserSettings() error {
 	// FTP settings
 	Settings.FTP.Enabled = false
 	Settings.FTP.Password = ""
+
+	// Stream settings
+	Settings.Stream.Enabled = false
 
 	// theme defaults
 	Settings.Theme.TextColor = "#ffffff"

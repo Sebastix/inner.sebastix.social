@@ -1,9 +1,11 @@
 package global
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -163,4 +165,12 @@ func ParseKinds(spec string, defaultKinds []nostr.Kind) ([]nostr.Kind, error) {
 
 	slices.Sort(kinds)
 	return kinds, nil
+}
+
+func RandomString(size int) string {
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }

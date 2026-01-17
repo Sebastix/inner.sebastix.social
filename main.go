@@ -39,6 +39,7 @@ import (
 	"github.com/fiatjaf/pyramid/popular"
 	"github.com/fiatjaf/pyramid/pyramid"
 	"github.com/fiatjaf/pyramid/search"
+	"github.com/fiatjaf/pyramid/stream"
 	"github.com/fiatjaf/pyramid/uppermost"
 )
 
@@ -153,6 +154,7 @@ func main() {
 	groups.Init(relay)
 	blossom.Init(relay)
 	paywall.Init(relay)
+	stream.Init(relay)
 	favorites.Init()
 	inbox.Init()
 	internal.Init()
@@ -460,6 +462,9 @@ func run(ctx context.Context) error {
 	mux.Handle("/groups/", groups.Handler)
 	mux.Handle("/groups", groups.Handler)
 	mux.Handle("/.well-known/nip29/", groups.Handler)
+
+	mux.Handle("/stream/", stream.Handler)
+	mux.Handle("/stream", stream.Handler)
 
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath+"/", inbox.Relay)
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath, inbox.Relay)

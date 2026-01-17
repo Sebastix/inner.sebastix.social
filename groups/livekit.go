@@ -299,7 +299,7 @@ func (group *Group) generateLiveKitToken(pubkey nostr.PubKey) string {
 		},
 	)
 
-	at.SetIdentity(pubkey.Hex() + ":" + randomToken(2))
+	at.SetIdentity(pubkey.Hex() + ":" + global.RandomString(2))
 	jwt, _ := at.ToJWT()
 	return jwt
 }

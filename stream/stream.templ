@@ -1,0 +1,143 @@
+package stream
+
+import (
+	"fiatjaf.com/nostr"
+	"iter"
+	"net/http"
+
+	"github.com/gwuhaolin/livego/configure"
+	"github.com/gwuhaolin/livego/protocol/rtmp"
+
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/layout"
+	"github.com/fiatjaf/pyramid/pyramid"
+	"strings"
+)
+
+func pageHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	var streamKey string
+	if pyramid.IsMember(loggedUser) {
+		userStreamKey := hmac.New(sha256.New, []byte(global.Settings.Stream.Salt)).Sum(loggedUser[:])
+		streamKey = base64.RawURLEncoding.EncodeToString(userStreamKey[0:23])
+
+		err := configure.RoomKeys.SetCustomKey(loggedUser.Hex(), streamKey)
+		if err != nil {
+			http.Error(w, "failed to get stream: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	StreamPage(loggedUser, streamKey).Render(r.Context(), w)
+}
+
+func getStreams() iter.Seq2[nostr.PubKey, int] {
+	return func(yield func(nostr.PubKey, int) bool) {
+		for key, val := range rtmpStream.GetStreams().Range {
+			n := val.(*rtmp.Stream).CheckAlive()
+			pkh, _ := strings.CutPrefix(key.(string), "live/")
+			pk, err := nostr.PubKeyFromHexCheap(pkh)
+
+			if err != nil {
+				L.Warn().Any("key", key).Msg("unknown stream found during list")
+				continue
+			}
+
+			if !yield(pk, n) {
+				return
+			}
+		}
+	}
+}
+
+templ StreamPage(loggedUser nostr.PubKey, streamKey string) {
+	@layout.Layout(loggedUser, "stream") {
+		<div class="max-w-3xl mx-auto">
+			<h1 class="text-4xl font-bold mb-4 font-[family-name:var(--primary-font)]">stream</h1>
+			<div class="space-y-4 text-gray-700 dark:text-gray-300">
+				<p class="text-lg leading-relaxed">
+					a livestreaming video server.
+				</p>
+			</div>
+			if pyramid.IsRoot(loggedUser) {
+				// streams list
+				<div class="mt-8">
+					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">currently live</h3>
+					{{ count := 0 }}
+					<div class="overflow-x-auto">
+						<table class="min-w-full divide-y divide-stone-200 dark:divide-stone-700">
+							<tbody class="bg-white dark:bg-stone-900 divide-y divide-stone-200 dark:divide-stone-700">
+								for member, n := range getStreams() {
+									{{ count++ }}
+									<tr>
+										<td class="px-4 py-3 text-sm">
+											@layout.ProfileLink(member)
+										</td>
+										<td class="px-4 py-3 text-sm text-stone-600 dark:text-stone-400">
+											{ n }
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+					if count == 0 {
+						<div>
+							no streams are live
+						</div>
+					}
+				</div>
+			}
+			if pyramid.IsMember(loggedUser) {
+				<div class="mt-8">
+					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">your info</h3>
+					<div class="space-y-3 text-sm text-stone-600 dark:text-stone-400">
+						<div class="flex items-center gap-2">
+							<span class="w-40 font-medium text-stone-700 dark:text-stone-300">stream key:</span>
+							<input type="text" readonly value={ streamKey } class="w-96 font-mono text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 rounded px-2 py-1"/>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="w-40 font-medium text-stone-700 dark:text-stone-300">base RTMP URL:</span>
+							<input type="text" readonly value={ "rtmp://" + global.Settings.Domain + ":1935/live" } class="w-96 font-mono text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 rounded px-2 py-1"/>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="w-40 font-medium text-stone-700 dark:text-stone-300">HLS URL:</span>
+							<input type="text" readonly value={ global.Settings.HTTPScheme() + global.Settings.Domain + "/stream/live/" + loggedUser.Hex() + ".m3u8" } class="w-96 font-mono text-stone-900 dark:text-stone-100 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 rounded px-2 py-1"/>
+						</div>
+					</div>
+				</div>
+			}
+			if pyramid.IsRoot(loggedUser) {
+				<div class="mt-24">
+					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">configuration</h3>
+					if !global.Settings.Stream.Enabled {
+						<form method="POST" action="/stream/enable">
+							<button
+								type="submit"
+								class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+							>
+								enable
+							</button>
+						</form>
+					} else {
+						<details>
+							<summary class="mb-4 cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">disable stream</summary>
+							<form class="my-4" method="POST" action="/stream/disable">
+								<button
+									type="submit"
+									class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+								>
+									disable
+								</button>
+							</form>
+						</details>
+					}
+				</div>
+			}
+		</div>
+	}
+}
