@@ -46,9 +46,10 @@ func setupEnabled() {
 
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Popular.HTTPBasePath
 
-	Relay.ManagementAPI.ChangeRelayName = changePopularRelayNameHandler
-	Relay.ManagementAPI.ChangeRelayDescription = changePopularRelayDescriptionHandler
-	Relay.ManagementAPI.ChangeRelayIcon = changePopularRelayIconHandler
+	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
+	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
+	Relay.ManagementAPI.ChangeRelayIcon = changeRelayIconHandler
+	Relay.ManagementAPI.BanEvent = banEventHandler
 
 	Relay.OverwriteRelayInformation = func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
 		info.Name = global.Settings.Popular.GetName()
@@ -59,7 +60,13 @@ func setupEnabled() {
 		return info
 	}
 
+	// cache pinned event at startup
+	global.CachePinnedEvent("popular")
+
 	Relay.UseEventstore(db, 500)
+
+	// use custom QueryStored with pinned event support
+	Relay.QueryStored = global.QueryStoredWithPinned("popular")
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
 	Relay.Info.Self = &pk
@@ -122,7 +129,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/"+global.Settings.Popular.HTTPBasePath+"/", 302)
 }
 
-func changePopularRelayNameHandler(ctx context.Context, name string) error {
+func changeRelayNameHandler(ctx context.Context, name string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -136,7 +143,7 @@ func changePopularRelayNameHandler(ctx context.Context, name string) error {
 	return global.SaveUserSettings()
 }
 
-func changePopularRelayDescriptionHandler(ctx context.Context, description string) error {
+func changeRelayDescriptionHandler(ctx context.Context, description string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -150,7 +157,7 @@ func changePopularRelayDescriptionHandler(ctx context.Context, description strin
 	return global.SaveUserSettings()
 }
 
-func changePopularRelayIconHandler(ctx context.Context, icon string) error {
+func changeRelayIconHandler(ctx context.Context, icon string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -162,4 +169,19 @@ func changePopularRelayIconHandler(ctx context.Context, icon string) error {
 
 	global.Settings.Popular.Icon = icon
 	return global.SaveUserSettings()
+}
+
+func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+
+	if !pyramid.IsRoot(caller) {
+		return fmt.Errorf("must be a root user to ban an event")
+	}
+
+	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("popular banevent called")
+
+	return global.IL.Popular.DeleteEvent(id)
 }

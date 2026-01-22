@@ -11,6 +11,8 @@ import (
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"github.com/a-h/templ"
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/pyramid"
 	"github.com/go-analyze/charts"
 )
 
@@ -25,7 +27,7 @@ type AuthorInfo struct {
 }
 
 func getTopKinds(perKind map[nostr.Kind]mmm.KindStats, infosLimit, kindsLimit int) ([]KindInfo, []nostr.Kind) {
-	var kindinfos = make([]KindInfo, 0, infosLimit)
+	kindinfos := make([]KindInfo, 0, infosLimit)
 	for kind, stats := range perKind {
 		kindinfos = append(kindinfos, KindInfo{Kind: kind, Count: stats.Total})
 	}
@@ -34,7 +36,7 @@ func getTopKinds(perKind map[nostr.Kind]mmm.KindStats, infosLimit, kindsLimit in
 	if len(kindinfos) > infosLimit {
 		kindinfos = kindinfos[:infosLimit]
 	}
-	var kinds = make([]nostr.Kind, 0, kindsLimit)
+	kinds := make([]nostr.Kind, 0, kindsLimit)
 	for i := range min(len(kindinfos), kindsLimit) {
 		kinds = append(kinds, kindinfos[i].Kind)
 	}
@@ -114,4 +116,54 @@ func generateWeeklyChart(stats mmm.EventStats, top5Kinds []nostr.Kind, name stri
 		_, err = fmt.Fprintf(w, `<img src="%s" alt="%s weekly activity chart" class="w-full max-w-4xl mx-auto rounded-lg shadow-md">`, dataURL, name)
 		return err
 	})
+}
+
+var relevantUsers map[string]*relevant
+
+func fillInRelevantUsersMapping() {
+	relevantUsers = map[string]*relevant{
+		"blossom":   {"blossom", global.IL.Blossom, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"main":      {"main", global.IL.Main, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"system":    {"system", global.IL.System, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"internal":  {"internal", global.IL.Internal, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"groups":    {"groups", global.IL.Groups, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"favorites": {"favorites", global.IL.Favorites, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"popular":   {"popular", global.IL.Popular, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"uppermost": {"uppermost", global.IL.Uppermost, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"inbox":     {"inbox", global.IL.Inbox, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"secret":    {"secret", global.IL.Secret, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+		"moderated": {"moderated", global.IL.Moderated, make([]nostr.PubKey, 0, pyramid.Members.Size()), 0},
+	}
+}
+
+type relevant struct {
+	label        string
+	store        *mmm.IndexingLayer
+	pubkeys      []nostr.PubKey
+	lastComputed nostr.Timestamp
+}
+
+func (r *relevant) get() []nostr.PubKey {
+	if r.lastComputed < nostr.Now()-60*3 /* 3 minutes */ {
+		r.recompute()
+	}
+	return r.pubkeys
+}
+
+func (r *relevant) recompute() {
+	stats, err := r.store.ComputeStats(mmm.StatsOptions{})
+	if err != nil {
+		log.Error().Err(err).Msg("failed to compute stats for usersWithEvents")
+		return
+	}
+
+	newList := make([]nostr.PubKey, 0, len(stats.PerPubKey))
+	for pubkey, count := range stats.PerPubKey {
+		if count.Total > 0 {
+			newList = append(newList, pubkey)
+		}
+	}
+
+	r.pubkeys = newList
+	r.lastComputed = nostr.Now()
 }

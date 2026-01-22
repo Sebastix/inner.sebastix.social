@@ -95,7 +95,7 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 							invite tree
 						}
 						@NavLink(global.Settings.BrowseURI, false) {
-							<span x-init="$el.parentNode.setAttribute('href', $el.parentNode.href.replace('{url}', encodeURIComponent(location.href.replace('http', 'ws').split('/').slice(0, 3).join('/')))); $el.parentNode.setAttribute('target', '_blank')">
+							<span x-init="$el.parentNode.setAttribute('href', $el.parentNode.href.replace(/({|%7B)url(}|%7D)/, encodeURIComponent(location.href.replace('http', 'ws').split('/').slice(0, 3).join('/')))); $el.parentNode.setAttribute('target', '_blank')">
 								browse
 							</span>
 						}
@@ -127,7 +127,7 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 							<div
 								x-show="open"
 								x-transition
-								class="absolute left-0 mt-2 w-48 bg-white dark:bg-stone-800 rounded-lg shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50"
+								class="absolute left-0 mt-2 w-48 bg-white dark:bg-stone-800 rounded-lg shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50 themed:bg-[rgb(from_var(--secondary-bg-color)_r_g_b_/_var(--header-transparency))] light:bg-white/60 dark:bg-stone-800/90"
 							>
 								if global.Settings.Groups.Enabled || pyramid.IsRoot(loggedUser) {
 									@NavLink("/groups/", currentPage == "groups") {
@@ -180,7 +180,7 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 							<div
 								x-show="open"
 								x-transition
-								class="absolute left-0 mt-2 w-48 bg-white dark:bg-stone-800 rounded-lg shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50"
+								class="absolute left-0 mt-2 w-48 bg-white dark:bg-stone-800 rounded-lg shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50 themed:bg-[rgb(from_var(--secondary-bg-color)_r_g_b_/_var(--header-transparency))] light:bg-white/60 dark:bg-stone-800/90"
 							>
 								for _, page := range []string {"internal", "inbox", "moderated", "favorites", "popular", "uppermost"} {
 									{{ var path string }}
@@ -262,7 +262,7 @@ case "uppermost":
 					</nav>
 				</div>
 			</header>
-			<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-grow">
+			<main class="w-[90%] max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-grow">
 				{ children... }
 			</main>
 			<footer
@@ -280,7 +280,7 @@ case "uppermost":
 				</div>
 			</footer>
 			<script>window.wnjParams = { position: 'bottom', startHidden: true, compactMode: true }</script>
-			<script src="https://cdn.jsdelivr.net/npm/window.nostr.js@0.4.7/dist/window.nostr.min.js"></script>
+			<script src="https://cdn.jsdelivr.net/npm/window.nostr.js@0.6.0/dist/window.nostr.min.js"></script>
 			<script>
 				function authButton() {
 					return {

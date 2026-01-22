@@ -3,7 +3,9 @@ package global
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"fiatjaf.com/nostr/eventstore/bleve"
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"fiatjaf.com/nostr/sdk"
 	"github.com/kelseyhightower/envconfig"
@@ -13,6 +15,7 @@ import (
 var (
 	S struct {
 		Port     string `envconfig:"PORT" default:"3366"`
+		SFTPPort string `envconvig:"SFTP_PORT" default:"2222"`
 		Host     string `envconfig:"HOST" default:"localhost"`
 		DataPath string `envconfig:"DATA_PATH" default:"./data"`
 	}
@@ -111,6 +114,14 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'blossom': %w", err)
 	}
 
+	Search.Main = &bleve.BleveBackend{
+		Path:          filepath.Join(S.DataPath, "search/main"),
+		RawEventStore: IL.Main,
+	}
+	if err := Search.Main.Init(); err != nil {
+		return fmt.Errorf("failed to init search database: %w", err)
+	}
+
 	// paywall cache
 	go paywallCacheCleanup()
 
@@ -119,6 +130,11 @@ func Init() error {
 
 func End() {
 	MMMM.Close()
+	Search.Main.Close()
+}
+
+var Search struct {
+	Main *bleve.BleveBackend
 }
 
 var IL struct {

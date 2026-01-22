@@ -51,6 +51,11 @@ func main() {
 	}
 	defer global.End()
 
+	// stuff we have to initialize
+	fillInRelevantUsersMapping()
+	slices.Sort(supportedKindsDefault)
+	slices.Sort(global.Settings.AllowedKinds)
+
 	// start periodic version checking
 	go func() {
 		for {
@@ -145,7 +150,7 @@ func main() {
 			return global.IL.Scheduled.SaveEvent(event)
 		} else {
 			// normal logic
-			return global.IL.Main.SaveEvent(event)
+			return saveToMain(event)
 		}
 	}
 	relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
@@ -159,7 +164,7 @@ func main() {
 	}
 	relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
 		// try to delete from everywhere
-		if err := global.IL.Main.DeleteEvent(id); err != nil {
+		if err := deleteFromMain(id); err != nil {
 			return err
 		}
 		// TODO: prevent deleting from group if too much time has passed
@@ -184,9 +189,11 @@ func main() {
 
 	relay.OnRequest = policies.SeqRequest(
 		policies.NoComplexFilters,
-		policies.NoSearchQueries,
-		// policies.FilterIPRateLimiter(20, time.Minute, 100),
 		func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			if !global.Settings.Search.Enable && filter.Search != "" {
+				return true, "search is disabled"
+			}
+
 			if filter.Tags["h"] != nil {
 				// nip29 logic
 				if global.Settings.Groups.Enabled {
@@ -242,8 +249,8 @@ func main() {
 			return policies.SeqEvent(
 				policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
 				policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
-				policies.RestrictToSpecifiedKinds(true, supportedKinds...),
 				policies.RejectUnprefixedNostrReferences,
+				grasp.RejectIncomingEvent,
 				basicRejectionLogic,
 			)(ctx, event)
 		}
@@ -252,13 +259,13 @@ func main() {
 	relay.OnEventSaved = func(ctx context.Context, event nostr.Event) {
 		if h := event.Tags.Find("h"); h != nil {
 			// nip29 logic
-			groups.State.ProcessEvent(ctx, event)
+			groups.State.HandleEventSaved(event)
 			return
 		}
 
 		// normal logic
 		switch event.Kind {
-		case 6, 7, 9321, 9735, 9802, 1, 1111:
+		case 6, 7, 9321, 9735, 9802, 1, 1111, 1244:
 			processReactions(ctx, event)
 		case 0, 3, 10019:
 			global.IL.System.SaveEvent(event)
@@ -267,7 +274,7 @@ func main() {
 		// trigger opentimestamping of selected event kinds
 		if global.Settings.EnableOTS {
 			switch event.Kind {
-			case 1, 11, 1111, 20, 21, 22, 24, 9802:
+			case 1, 11, 1111, 1222, 1244, 20, 21, 22, 24, 9802:
 				go triggerOTS(ctx, event)
 			}
 		}
@@ -286,6 +293,9 @@ func main() {
 	relay.PreventBroadcast = preventBroadcast
 
 	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 43)
+	if global.Settings.Search.Enable {
+		relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 50)
+	}
 	if global.Settings.Groups.Enabled {
 		relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 29)
 	}
@@ -296,9 +306,13 @@ func main() {
 	relay.ManagementAPI.BanEvent = banEventHandler
 	relay.ManagementAPI.BanPubKey = banPubKeyHandler
 	relay.ManagementAPI.ListAllowedPubKeys = listAllowedPubKeysHandler
+	relay.ManagementAPI.ListBannedPubKeys = listBannedPubKeysHandler
 	relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
 	relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
 	relay.ManagementAPI.ChangeRelayIcon = changeRelayIconHandler
+	relay.ManagementAPI.ListAllowedKinds = listAllowedKindsHandler
+	relay.ManagementAPI.AllowKind = allowKindHandler
+	relay.ManagementAPI.DisallowKind = disallowKindHandler
 	relay.ManagementAPI.ListBlockedIPs = listBlockedIPsHandler
 	relay.ManagementAPI.BlockIP = blockIPHandler
 	relay.ManagementAPI.UnblockIP = unblockIPHandler
@@ -323,6 +337,15 @@ func main() {
 		}
 		info.Software = "https://github.com/Sebastix/inner.sebastix.social/tree/inner.sebastix.social"
 		return info
+	}
+
+	// start SFTP server if enabled
+	if global.Settings.FTP.Enabled && global.Settings.FTP.Password != "" {
+		if err := startSFTP(); err != nil {
+			log.Error().Err(err).Msg("failed to start SFTP server")
+		}
+	} else if global.Settings.FTP.Enabled && global.Settings.FTP.Password == "" {
+		log.Warn().Msg("FTP server is enabled but no password is set - not starting server")
 	}
 
 	start()

@@ -3,7 +3,6 @@ package moderated
 import (
 	"context"
 	"fmt"
-	"iter"
 	"net/http"
 	"time"
 
@@ -48,9 +47,9 @@ func setupEnabled() {
 	Relay.Info.Self = &pk
 	Relay.Info.PubKey = &pk
 
-	Relay.ManagementAPI.ChangeRelayName = changeModeratedRelayNameHandler
-	Relay.ManagementAPI.ChangeRelayDescription = changeModeratedRelayDescriptionHandler
-	Relay.ManagementAPI.ChangeRelayIcon = changeModeratedRelayIconHandler
+	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
+	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
+	Relay.ManagementAPI.ChangeRelayIcon = changeRelayIconHandler
 	Relay.ManagementAPI.ListEventsNeedingModeration = listEventsNeedingModerationHandler
 	Relay.ManagementAPI.AllowEvent = allowEventHandler
 	Relay.ManagementAPI.BanEvent = banEventHandler
@@ -64,10 +63,11 @@ func setupEnabled() {
 		return info
 	}
 
-	// use moderated DB for queries
-	Relay.QueryStored = func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
-		return global.IL.Moderated.QueryEvents(filter, 500)
-	}
+	// Cache pinned event at startup
+	global.CachePinnedEvent("moderated")
+
+	// use custom QueryStored with pinned event support
+	Relay.QueryStored = global.QueryStoredWithPinned("moderated")
 	Relay.Count = func(ctx context.Context, filter nostr.Filter) (uint32, error) {
 		return global.IL.Moderated.CountEvents(filter)
 	}
@@ -160,7 +160,7 @@ func moderatedPageHandler(w http.ResponseWriter, r *http.Request) {
 	moderatedPage(loggedUser).Render(r.Context(), w)
 }
 
-func changeModeratedRelayNameHandler(ctx context.Context, name string) error {
+func changeRelayNameHandler(ctx context.Context, name string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -174,7 +174,7 @@ func changeModeratedRelayNameHandler(ctx context.Context, name string) error {
 	return global.SaveUserSettings()
 }
 
-func changeModeratedRelayDescriptionHandler(ctx context.Context, description string) error {
+func changeRelayDescriptionHandler(ctx context.Context, description string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -188,7 +188,7 @@ func changeModeratedRelayDescriptionHandler(ctx context.Context, description str
 	return global.SaveUserSettings()
 }
 
-func changeModeratedRelayIconHandler(ctx context.Context, icon string) error {
+func changeRelayIconHandler(ctx context.Context, icon string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")

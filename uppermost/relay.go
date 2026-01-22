@@ -46,9 +46,10 @@ func setupEnabled() {
 
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Uppermost.HTTPBasePath
 
-	Relay.ManagementAPI.ChangeRelayName = changeUppermostRelayNameHandler
-	Relay.ManagementAPI.ChangeRelayDescription = changeUppermostRelayDescriptionHandler
-	Relay.ManagementAPI.ChangeRelayIcon = changeUppermostRelayIconHandler
+	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
+	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
+	Relay.ManagementAPI.ChangeRelayIcon = changeRelayIconHandler
+	Relay.ManagementAPI.BanEvent = banEventHandler
 
 	Relay.OverwriteRelayInformation = func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
 		info.Name = global.Settings.Uppermost.GetName()
@@ -59,7 +60,13 @@ func setupEnabled() {
 		return info
 	}
 
+	// cache pinned event at startup
+	global.CachePinnedEvent("uppermost")
+
 	Relay.UseEventstore(db, 500)
+
+	// use custom QueryStored with pinned event support
+	Relay.QueryStored = global.QueryStoredWithPinned("uppermost")
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
 	Relay.Info.Self = &pk
@@ -122,7 +129,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/"+global.Settings.Uppermost.HTTPBasePath+"/", 302)
 }
 
-func changeUppermostRelayNameHandler(ctx context.Context, name string) error {
+func changeRelayNameHandler(ctx context.Context, name string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -136,7 +143,7 @@ func changeUppermostRelayNameHandler(ctx context.Context, name string) error {
 	return global.SaveUserSettings()
 }
 
-func changeUppermostRelayDescriptionHandler(ctx context.Context, description string) error {
+func changeRelayDescriptionHandler(ctx context.Context, description string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -150,7 +157,7 @@ func changeUppermostRelayDescriptionHandler(ctx context.Context, description str
 	return global.SaveUserSettings()
 }
 
-func changeUppermostRelayIconHandler(ctx context.Context, icon string) error {
+func changeRelayIconHandler(ctx context.Context, icon string) error {
 	author, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
@@ -162,4 +169,19 @@ func changeUppermostRelayIconHandler(ctx context.Context, icon string) error {
 
 	global.Settings.Uppermost.Icon = icon
 	return global.SaveUserSettings()
+}
+
+func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+
+	if !pyramid.IsRoot(caller) {
+		return fmt.Errorf("must be a root user to ban an event")
+	}
+
+	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("uppermost banevent called")
+
+	return global.IL.Uppermost.DeleteEvent(id)
 }
