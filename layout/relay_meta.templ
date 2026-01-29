@@ -117,7 +117,18 @@ templ RelayMetadata(relayId string, name, description, icon string, pinned nostr
 		<form method="POST" action="/settings" x-ref="form" class="mb-4">
 			<div class="space-y-4">
 				<div>
-					<label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_name" }>relay name</label>
+					<label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_pubkey" }>relay pubkey</label>
+					<input
+            type="text"
+            name={ relayId + "_pubkey" }
+            placeholder="leave empty to use default"
+            class="w-full px-4 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100"
+            x-model="pubkey"
+            @blur="saveSettings()"
+          />
+			  </div>
+			  <div>
+			    <label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_name" }>relay name</label>
 					<input
 						type="text"
 						name={ relayId + "_name" }
