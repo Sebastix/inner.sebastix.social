@@ -14,7 +14,7 @@ import (
 type UserSettings struct {
 	// relay metadata
 	Domain           string   `json:"domain"`
-	RelayPubkey        string   `json:"relay_pubkey"`
+	RelayPubkey      string   `json:"relay_pubkey"`
 	RelayName        string   `json:"relay_name"`
 	RelayDescription string   `json:"relay_description"`
 	RelayContact     string   `json:"relay_contact"`
