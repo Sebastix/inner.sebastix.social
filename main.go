@@ -325,8 +325,8 @@ func main() {
 		}
 
 		pk := global.Settings.RelayInternalSecretKey.Public()
-		info.Self = 06639a386c9c1014217622ccbcf40908c4f1a0c33e23f8d6d68f4abf655f8f71
-		info.PubKey = 06639a386c9c1014217622ccbcf40908c4f1a0c33e23f8d6d68f4abf655f8f71
+		info.Self = &pk
+		info.PubKey = &pk
 
 		info.Name = global.Settings.RelayName
 		info.Description = global.Settings.RelayDescription
