@@ -20,6 +20,7 @@ import (
 	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"github.com/fiatjaf/pyramid/search"
 )
 
 func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, msg string) {
@@ -40,12 +41,7 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 	// check allowed kinds:
 	// allow all ephemeral
 	if !event.Kind.IsEphemeral() {
-		var kinds []nostr.Kind
-		if len(global.Settings.AllowedKinds) > 0 {
-			kinds = global.Settings.AllowedKinds
-		} else {
-			kinds = supportedKindsDefault
-		}
+		kinds := global.GetAllowedKinds()
 		if _, allowed := slices.BinarySearch(kinds, nostr.Kind(event.Kind)); !allowed {
 			return true, fmt.Sprintf("event kind %d not allowed", event.Kind)
 		}
@@ -147,20 +143,6 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 	return true, "not authorized"
 }
 
-// this must be sorted, which we do on main()
-var supportedKindsDefault = []nostr.Kind{
-	0, 1, 3, 5, 6, 7, 8, 9,
-	11, 16, 20, 21, 22, 24, 818, 1040,
-	1063, 1111, 1222, 1244, 1617, 1618, 1619, 1621,
-	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
-	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
-	10005, 10006, 10007, 10009, 10015, 10019, 10030, 10050,
-	10101, 10102, 10317, 17375, 24133, 30000, 30002, 30003,
-	30004, 30008, 30009, 30015, 30023, 30030, 30078, 30311,
-	30617, 30618, 30818, 30819, 31922, 31923, 31924, 31925,
-	39701,
-}
-
 func rejectInviteRequestsNonAuthed(ctx context.Context, filter nostr.Filter) (bool, string) {
 	if idx := slices.Index(filter.Kinds, 28935); idx != -1 {
 		if authed, ok := khatru.GetAuthed(ctx); ok {
@@ -186,22 +168,23 @@ func rejectInviteRequestsNonAuthed(ctx context.Context, filter nostr.Filter) (bo
 // "-" plus the specific paywall "t" tag) to check if the querier is eligible for reading.
 func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 	if filter.Search != "" && global.Settings.Search.Enable {
-		return global.Search.Main.QueryEvents(filter, 40)
+		return search.Main.QueryEvents(filter, 40)
 	}
 
 	return func(yield func(nostr.Event) bool) {
 		// try to get a pinned note first
 		if global.PinnedCache.Main != nil &&
 			filter.IDs == nil && filter.Tags == nil && filter.Authors == nil &&
-			filter.Until == 0 && filter.Since < global.PinnedCache.Main.CreatedAt &&
-			(filter.Kinds == nil || slices.Contains(filter.Kinds, global.PinnedCache.Main.Kind)) {
+			filter.Until == 0 && filter.Since < global.PinnedCache.Main.CreatedAt {
 			// display pinned in this case
-			if !yield(*global.PinnedCache.Main) {
-				return
-			}
-			if filter.Limit > 0 {
-				// we've used one limit
-				filter.Limit--
+			if y, ok := global.PreparedPinned(global.PinnedCache.Main, filter); ok {
+				if !yield(y) {
+					return
+				}
+				if filter.Limit > 0 {
+					// we've used one limit
+					filter.Limit--
+				}
 			}
 		}
 
@@ -414,7 +397,7 @@ func virtualInviteValidationEvent(inviter nostr.PubKey) nostr.Event {
 }
 
 func deleteFromMain(id nostr.ID) error {
-	if err := global.Search.Main.DeleteEvent(id); err != nil {
+	if err := search.Main.DeleteEvent(id); err != nil {
 		return err
 	}
 
@@ -427,14 +410,37 @@ func saveToMain(event nostr.Event) error {
 	}
 
 	if global.Settings.Search.Enable {
-		switch event.Kind {
-		case 1, 11, 24, 1111, 30023, 30818:
-			if len(event.Content) > 45 {
-				return global.Search.Main.SaveEvent(event)
+		return search.Main.IndexEvent(event)
+	} else {
+		return nil
+	}
+}
+
+func replaceOnMain(event nostr.Event) error {
+	if global.Settings.Search.Enable {
+		search.Main.Lock()
+		defer search.Main.Unlock()
+
+		filter := nostr.Filter{Kinds: []nostr.Kind{event.Kind}, Authors: []nostr.PubKey{event.PubKey}}
+		if event.Kind.IsAddressable() {
+			filter.Tags = nostr.TagMap{"d": []string{event.Tags.GetD()}}
+		}
+		for previous := range global.IL.Main.QueryEvents(filter, 10) {
+			if nostr.IsOlder(previous, event) {
+				search.Main.DeleteEvent(previous.ID)
 			}
 		}
 	}
-	return nil
+
+	if err := global.IL.Main.ReplaceEvent(event); err != nil {
+		return err
+	}
+
+	if global.Settings.Search.Enable {
+		return search.Main.IndexEvent(event)
+	} else {
+		return nil
+	}
 }
 
 // splits the query between the main relay and the groups relay

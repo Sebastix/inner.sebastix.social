@@ -22,6 +22,8 @@ var (
 )
 
 func Init() {
+	Relay = khatru.NewRelay()
+
 	if global.Settings.Moderated.Enabled {
 		setupEnabled()
 	} else {
@@ -30,17 +32,18 @@ func Init() {
 }
 
 func setupDisabled() {
-	Relay = khatru.NewRelay()
-	Relay.Router().HandleFunc("/"+global.Settings.Moderated.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	global.CleanupRelay(Relay)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Moderated.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		moderatedPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/enable", enableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/enable", enableHandler)
+	Relay.SetRouter(mux)
 }
 
 func setupEnabled() {
-	Relay = khatru.NewRelay()
-
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Moderated.HTTPBasePath
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
@@ -64,10 +67,10 @@ func setupEnabled() {
 	}
 
 	// Cache pinned event at startup
-	global.CachePinnedEvent("moderated")
+	global.CachePinnedEvent(global.RelayModerated)
 
 	// use custom QueryStored with pinned event support
-	Relay.QueryStored = global.QueryStoredWithPinned("moderated")
+	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayModerated)
 	Relay.Count = func(ctx context.Context, filter nostr.Filter) (uint32, error) {
 		return global.IL.Moderated.CountEvents(filter)
 	}
@@ -93,7 +96,7 @@ func setupEnabled() {
 		policies.PreventLargeContent(10000),
 		policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
 		policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
-		policies.RestrictToSpecifiedKinds(true, 1, 11, 1111, 1222, 1244, 30023, 30818, 9802, 20, 21, 22),
+		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if global.Settings.Moderated.MinPoW > 0 {
 				difficulty := nip13.Difficulty(evt.ID)
@@ -111,10 +114,12 @@ func setupEnabled() {
 		return true
 	}
 
-	Relay.Router().HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/approve/{eventId}", approveHandler)
-	Relay.Router().HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/reject/{eventId}", rejectHandler)
-	Relay.Router().HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/disable", disableHandler)
-	Relay.Router().HandleFunc("/"+global.Settings.Moderated.HTTPBasePath+"/", moderatedPageHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/approve/{eventId}", approveHandler)
+	mux.HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/reject/{eventId}", rejectHandler)
+	mux.HandleFunc("POST /"+global.Settings.Moderated.HTTPBasePath+"/disable", disableHandler)
+	mux.HandleFunc("/"+global.Settings.Moderated.HTTPBasePath+"/", moderatedPageHandler)
+	Relay.SetRouter(mux)
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {

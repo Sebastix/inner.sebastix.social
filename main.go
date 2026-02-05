@@ -31,8 +31,10 @@ import (
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/personal"
 	"github.com/fiatjaf/pyramid/popular"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"github.com/fiatjaf/pyramid/search"
 	"github.com/fiatjaf/pyramid/uppermost"
 )
 
@@ -45,15 +47,24 @@ var (
 var static embed.FS
 
 func main() {
+	log.Info().Str("version", currentVersion).Msg("running pyramid")
+
 	if err := global.Init(); err != nil {
 		log.Fatal().Err(err).Msg("couldn't initialize")
 		return
 	}
+	if global.Settings.Search.Enable {
+		if err := search.Init(); err != nil {
+			log.Fatal().Err(err).Msg("couldn't initialize search")
+			return
+		}
+	}
 	defer global.End()
+	defer search.End()
 
 	// stuff we have to initialize
 	fillInRelevantUsersMapping()
-	slices.Sort(supportedKindsDefault)
+	slices.Sort(global.SupportedKindsDefault)
 	slices.Sort(global.Settings.AllowedKinds)
 
 	// start periodic version checking
@@ -88,6 +99,9 @@ func main() {
 	relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain
 	relay.Negentropy = true
 
+	// cache pinned event at startup
+	global.CachePinnedEvent(global.RelayMain)
+
 	// init sdk
 	global.Nostr = sdk.NewSystem()
 	global.Nostr.Store = global.IL.System
@@ -103,6 +117,7 @@ func main() {
 	// init basic http routes
 	relay.Router().HandleFunc("/action", actionHandler)
 	relay.Router().HandleFunc("/settings", settingsHandler)
+	relay.Router().HandleFunc("/search/reindex", search.StreamingReindexHTML)
 	relay.Router().HandleFunc("/u", memberPageHandler)
 	relay.Router().HandleFunc("/u/{pubkey}", memberPageHandler)
 	relay.Router().HandleFunc("/u/sync", syncHandler)
@@ -128,6 +143,7 @@ func main() {
 	favorites.Init()
 	inbox.Init()
 	internal.Init()
+	personal.Init()
 	moderated.Init()
 	popular.Init()
 	uppermost.Init()
@@ -159,7 +175,7 @@ func main() {
 			return global.IL.Groups.ReplaceEvent(event)
 		} else {
 			// normal logic
-			return global.IL.Main.ReplaceEvent(event)
+			return replaceOnMain(event)
 		}
 	}
 	relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
@@ -292,16 +308,6 @@ func main() {
 	relay.OnConnect = onConnect
 	relay.PreventBroadcast = preventBroadcast
 
-	relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 43)
-	if global.Settings.Search.Enable {
-		relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 50)
-	}
-	if global.Settings.Groups.Enabled {
-		relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 29)
-	}
-	if global.Settings.AcceptScheduledEvents {
-		relay.Info.SupportedNIPs = append(relay.Info.SupportedNIPs, 16)
-	}
 	relay.ManagementAPI.AllowPubKey = allowPubKeyHandler
 	relay.ManagementAPI.BanEvent = banEventHandler
 	relay.ManagementAPI.BanPubKey = banPubKeyHandler
@@ -317,11 +323,23 @@ func main() {
 	relay.ManagementAPI.BlockIP = blockIPHandler
 	relay.ManagementAPI.UnblockIP = unblockIPHandler
 	relay.OverwriteRelayInformation = func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
+		// prevent flotilla from doing its negentropy here as it is incompatible with our groups approach
 		if strings.Contains(r.Header.Get("User-Agent"), "aiohttp") || strings.Contains(r.Referer(), "flotilla") {
 			if idx := slices.Index(info.SupportedNIPs, 77); idx != -1 {
 				info.SupportedNIPs[idx] = info.SupportedNIPs[len(info.SupportedNIPs)-1]
 				info.SupportedNIPs = info.SupportedNIPs[0 : len(info.SupportedNIPs)-1]
 			}
+		}
+
+		info.SupportedNIPs = append(info.SupportedNIPs, 43)
+		if global.Settings.Search.Enable {
+			info.SupportedNIPs = append(info.SupportedNIPs, 50)
+		}
+		if global.Settings.Groups.Enabled {
+			info.SupportedNIPs = append(info.SupportedNIPs, 29)
+		}
+		if global.Settings.AcceptScheduledEvents {
+			info.SupportedNIPs = append(info.SupportedNIPs, 16)
 		}
 
 		pk := global.Settings.RelayInternalSecretKey.Public()
@@ -336,6 +354,7 @@ func main() {
 			RestrictedWrites: true,
 		}
 		info.Software = "https://github.com/Sebastix/inner.sebastix.social/tree/inner.sebastix.social"
+		info.Version = currentVersion
 		return info
 	}
 
@@ -388,6 +407,9 @@ func run(ctx context.Context) error {
 
 	mux.Handle("/"+global.Settings.Internal.HTTPBasePath+"/", internal.Relay)
 	mux.Handle("/"+global.Settings.Internal.HTTPBasePath, internal.Relay)
+
+	mux.Handle("/"+global.Settings.Personal.HTTPBasePath+"/", personal.Relay)
+	mux.Handle("/"+global.Settings.Personal.HTTPBasePath, personal.Relay)
 
 	mux.Handle("/"+global.Settings.Favorites.HTTPBasePath+"/", favorites.Relay)
 	mux.Handle("/"+global.Settings.Favorites.HTTPBasePath, favorites.Relay)

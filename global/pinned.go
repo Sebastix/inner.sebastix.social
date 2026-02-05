@@ -4,31 +4,34 @@ import (
 	"context"
 	"iter"
 	"slices"
+	"strconv"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/mmm"
 )
 
 // QueryStoredWithPinned is a custom QueryStored function that returns pinned events first when that makes sense
-func QueryStoredWithPinned(relayId string) func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
+func QueryStoredWithPinned(relayId RelayID) func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 	return func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 		var store *mmm.IndexingLayer
 		var get func() *nostr.Event
 
 		switch relayId {
-		case "internal":
+		// we don't handle RelayMain here because that is handled in queryMain at core.go
+		//
+		case RelayInternal:
 			store = IL.Internal
 			get = func() *nostr.Event { return PinnedCache.Internal }
-		case "favorites":
+		case RelayFavorites:
 			store = IL.Favorites
 			get = func() *nostr.Event { return PinnedCache.Favorites }
-		case "popular":
+		case RelayPopular:
 			store = IL.Popular
 			get = func() *nostr.Event { return PinnedCache.Popular }
-		case "uppermost":
+		case RelayUppermost:
 			store = IL.Uppermost
 			get = func() *nostr.Event { return PinnedCache.Uppermost }
-		case "moderated":
+		case RelayModerated:
 			store = IL.Moderated
 			get = func() *nostr.Event { return PinnedCache.Moderated }
 		}
@@ -38,16 +41,16 @@ func QueryStoredWithPinned(relayId string) func(ctx context.Context, filter nost
 
 			if pinned != nil &&
 				filter.IDs == nil && filter.Tags == nil && filter.Authors == nil &&
-				filter.Until == 0 && filter.Since < pinned.CreatedAt &&
-				(filter.Kinds == nil || slices.Contains(filter.Kinds, pinned.Kind)) {
-				// display pinned in this case
-				if !yield(*pinned) {
-					return
-				}
+				filter.Until == 0 && filter.Since < pinned.CreatedAt {
 
-				if filter.Limit > 0 {
-					// we've used one limit
-					filter.Limit--
+				if y, ok := PreparedPinned(pinned, filter); ok {
+					if !yield(y) {
+						return
+					}
+					if filter.Limit > 0 {
+						// we've used one limit
+						filter.Limit--
+					}
 				}
 			}
 
@@ -61,43 +64,81 @@ func QueryStoredWithPinned(relayId string) func(ctx context.Context, filter nost
 	}
 }
 
-func CachePinnedEvent(relayId string) {
+// if the query allows, we'll wrap the pinned event in a kind:6 repost with "-" tag
+// otherwise we will return it naked.
+// or not return it at all
+func PreparedPinned(pinned *nostr.Event, filter nostr.Filter) (nostr.Event, bool) {
+	if pinned.Kind == 1 && (filter.Kinds == nil || slices.Contains(filter.Kinds, 6)) {
+		repost := nostr.Event{
+			Kind:      6,
+			CreatedAt: nostr.Now() + 600,
+			Tags: nostr.Tags{
+				{"-", ""},
+				{"e", pinned.ID.Hex()},
+			},
+			Content: pinned.String(),
+			PubKey:  Settings.RelayInternalSecretKey.Public(),
+		}
+		repost.Sign(Settings.RelayInternalSecretKey)
+		return repost, true
+	} else if slices.Contains(filter.Kinds, 16) {
+		repost := nostr.Event{
+			Kind:      16,
+			CreatedAt: nostr.Now() + 600,
+			Tags: nostr.Tags{
+				{"-", ""},
+				{"e", pinned.ID.Hex()},
+				{"k", strconv.Itoa(int(pinned.Kind))},
+			},
+			Content: pinned.String(),
+			PubKey:  Settings.RelayInternalSecretKey.Public(),
+		}
+		repost.Sign(Settings.RelayInternalSecretKey)
+		return repost, true
+	} else if slices.Contains(filter.Kinds, pinned.Kind) {
+		return *pinned, true
+	} else {
+		return nostr.Event{}, false
+	}
+}
+
+func CachePinnedEvent(relayId RelayID) {
 	var store *mmm.IndexingLayer
 	var pinnedID nostr.ID
 	var set func(*nostr.Event)
 
 	switch relayId {
-	case "main":
+	case RelayMain:
 		store = IL.Main
 		set = func(evt *nostr.Event) {
 			PinnedCache.Main = evt
 		}
 		pinnedID = Settings.Pinned
-	case "internal":
+	case RelayInternal:
 		store = IL.Internal
 		set = func(evt *nostr.Event) {
 			PinnedCache.Internal = evt
 		}
 		pinnedID = Settings.Internal.Pinned
-	case "favorites":
+	case RelayFavorites:
 		store = IL.Favorites
 		set = func(evt *nostr.Event) {
 			PinnedCache.Favorites = evt
 		}
 		pinnedID = Settings.Favorites.Pinned
-	case "popular":
+	case RelayPopular:
 		store = IL.Popular
 		set = func(evt *nostr.Event) {
 			PinnedCache.Popular = evt
 		}
 		pinnedID = Settings.Popular.Pinned
-	case "uppermost":
+	case RelayUppermost:
 		store = IL.Uppermost
 		set = func(evt *nostr.Event) {
 			PinnedCache.Uppermost = evt
 		}
 		pinnedID = Settings.Uppermost.Pinned
-	case "moderated":
+	case RelayModerated:
 		store = IL.Moderated
 		set = func(evt *nostr.Event) {
 			PinnedCache.Moderated = evt
@@ -113,7 +154,6 @@ func CachePinnedEvent(relayId string) {
 			break
 		}
 	}
-
 }
 
 var PinnedCache struct {

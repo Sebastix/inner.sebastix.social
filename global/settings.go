@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"fiatjaf.com/nostr"
@@ -37,13 +38,15 @@ type UserSettings struct {
 	// general
 	BrowseURI               string `json:"browse_uri"`
 	LinkURL                 string `json:"link_url"`
-	MaxInvitesPerPerson     int    `json:"max_invites_per_person"`
+	MaxInvitesPerPerson     int    `json:"max_invites_per_person,omitempty"`
+	MaxInvitesAtEachLevel   []int  `json:"max_invites_at_each_level,omitempty"`
 	MaxEventSize            int    `json:"max_event_size"`
 	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
 	EnableOTS               bool   `json:"enable_ots"`
 	AcceptScheduledEvents   bool   `json:"accept_scheduled_events"`
 	Search                  struct {
-		Enable bool `json:"enable"`
+		Enable    bool     `json:"enable"`
+		Languages []string `json:"languages"`
 	} `json:"search"`
 
 	Paywall struct {
@@ -66,6 +69,10 @@ type UserSettings struct {
 	Internal struct {
 		RelayMetadata
 	} `json:"internal"`
+
+	Personal struct {
+		RelayMetadata
+	} `json:"personal"`
 
 	Favorites struct {
 		RelayMetadata
@@ -141,6 +148,8 @@ func (rm RelayMetadata) GetDescription() string {
 	switch rm.base {
 	case "internal":
 		return "the internal relay is only readable and writable by members. it can be used for meta discussions or anything else."
+	case "personal":
+		return "personal storage for each member. each member can only read and write their own events."
 	case "favorites":
 		return "relay members can manually republish notes here and they'll be saved."
 	case "inbox":
@@ -194,6 +203,17 @@ func (us UserSettings) GetExternalLink(pointer nostr.Pointer) string {
 	return strings.ReplaceAll(us.LinkURL, "{code}", nip19.EncodePointer(pointer))
 }
 
+func (us UserSettings) GetMaxInvitesDisplay() string {
+	if len(us.MaxInvitesAtEachLevel) > 0 {
+		parts := make([]string, len(us.MaxInvitesAtEachLevel))
+		for i, v := range us.MaxInvitesAtEachLevel {
+			parts[i] = strconv.Itoa(v)
+		}
+		return strings.Join(parts, "/")
+	}
+	return strconv.Itoa(us.MaxInvitesPerPerson)
+}
+
 func getUserSettingsPath() string {
 	return filepath.Join(S.DataPath, "settings.json")
 }
@@ -208,16 +228,20 @@ func loadUserSettings() error {
 		RequireCurrentTimestamp: true,
 		EnableOTS:               true,
 		BlockedIPs:              []string{},
+		AcceptScheduledEvents:   true,
 	}
-	Settings.Search.Enable = true
+	Settings.Search.Enable = false
+	Settings.Search.Languages = []string{"en"}
 
 	Settings.Inbox.Enabled = true
 	Settings.Internal.Enabled = true
+	Settings.Personal.Enabled = true
 	Settings.Favorites.Enabled = true
 	Settings.Inbox.HellthreadLimit = 10
 	Settings.Popular.PercentThreshold = 20
 	Settings.Uppermost.PercentThreshold = 33
 	Settings.Internal.HTTPBasePath = "internal"
+	Settings.Personal.HTTPBasePath = "personal"
 	Settings.Favorites.HTTPBasePath = "favorites"
 	Settings.Inbox.HTTPBasePath = "inbox"
 	Settings.Popular.HTTPBasePath = "popular"
@@ -240,6 +264,7 @@ func loadUserSettings() error {
 	// http base paths
 	Settings.Inbox.base = "inbox"
 	Settings.Internal.base = "internal"
+	Settings.Personal.base = "personal"
 	Settings.Favorites.base = "favorites"
 	Settings.Popular.base = "popular"
 	Settings.Uppermost.base = "uppermost"
@@ -291,4 +316,25 @@ func SaveUserSettings() error {
 	}
 
 	return nil
+}
+
+// this must be sorted, which we do on main()
+var SupportedKindsDefault = []nostr.Kind{
+	0, 1, 3, 5, 6, 7, 8, 9,
+	11, 16, 20, 21, 22, 24, 818, 1040,
+	1063, 1111, 1222, 1244, 1617, 1618, 1619, 1621,
+	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
+	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
+	10005, 10006, 10007, 10009, 10015, 10019, 10030, 10050,
+	10063, 10101, 10102, 10317, 17375, 24133, 30000, 30002,
+	30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
+	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,
+	31924, 31925, 39701,
+}
+
+func GetAllowedKinds() []nostr.Kind {
+	if len(Settings.AllowedKinds) > 0 {
+		return Settings.AllowedKinds
+	}
+	return SupportedKindsDefault
 }

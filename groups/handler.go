@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	log       = global.Log.With().Str("relay", "groups").Logger()
+	log       = global.Log.With().Str("service", "groups").Logger()
 	hostRelay *khatru.Relay // hack to get the main relay object into here
 	Handler   = &MuxHandler{}
 	State     *GroupsState
@@ -41,7 +41,6 @@ func setupDisabled() {
 
 func setupEnabled() {
 	State = NewGroupsState(Options{
-		Domain:    global.Settings.Domain,
 		DB:        global.IL.Groups,
 		SecretKey: global.Settings.RelayInternalSecretKey,
 		Broadcast: hostRelay.BroadcastEvent,

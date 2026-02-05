@@ -16,7 +16,6 @@ import (
 
 var (
 	allowedKinds  = []nostr.Kind{9802, 1, 1111, 11, 1244, 1222, 30818, 20, 21, 22, 30023, 9735, 9321}
-	moneyKinds    = []nostr.Kind{9735, 9321}
 	secretKinds   = []nostr.Kind{1059}
 	aggregatedWoT WotXorFilter
 	wotComputed   = false
@@ -74,20 +73,79 @@ func rejectFilter(ctx context.Context, filter nostr.Filter) (bool, string) {
 }
 
 func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
+	// if this is a deletion event, check if it tags events that exist in our stores
+	if evt.Kind == 5 {
+		del := evt
+		for _, tag := range del.Tags {
+			if len(tag) >= 2 && tag[0] == "e" {
+				id, err := nostr.IDFromHex(tag[1])
+				if err != nil {
+					continue // skip invalid event ids
+				}
+
+				// check if this event exists in either store
+				var found nostr.Event
+				for evt := range global.IL.Inbox.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+					found = evt
+					break
+				}
+				if found.ID != nostr.ZeroID {
+					for evt := range global.IL.Secret.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+						found = evt
+						break
+					}
+				}
+				if del.PubKey == found.PubKey ||
+					found.Tags.FindWithValue("p", del.PubKey.Hex()) != nil ||
+					found.Tags.FindWithValue("P", del.PubKey.Hex()) != nil {
+					// at least one tagged event exists in our stores, authored by the deleter
+					// or tagging the deleter -- special case
+					// accept deletion
+					return false, ""
+				}
+			}
+		}
+
+		return true, "target doesn't exist in this relay"
+	}
+
 	// count p-tags and check if they tag pyramid members
 	pTagCount := 0
+	PTagCount := 0
 	tagsPyramidMember := false
+	sender := evt.PubKey
+
 	for _, tag := range evt.Tags {
-		if len(tag) >= 2 && (tag[0] == "p" || tag[0] == "P") {
-			pTagCount++
+		if len(tag) >= 2 {
+			if tag[0] == "p" {
+				pTagCount++
 
-			pubkey, err := nostr.PubKeyFromHexCheap(tag[1])
-			if err != nil {
-				return true, "error: invalid 'p' tag"
-			}
+				pubkey, err := nostr.PubKeyFromHex(tag[1])
+				if err != nil {
+					return true, "error: invalid 'p' tag"
+				}
 
-			if pyramid.IsMember(pubkey) {
-				tagsPyramidMember = true
+				if pyramid.IsMember(pubkey) {
+					tagsPyramidMember = true
+				}
+			} else if tag[0] == "P" {
+				PTagCount++
+
+				pubkey, err := nostr.PubKeyFromHex(tag[1])
+				if err != nil {
+					return true, "error: invalid 'P' tag"
+				}
+
+				switch evt.Kind {
+				case 1111, 1244:
+					// in this case the 'P' is kinda like the 'p'
+					if pyramid.IsMember(pubkey) {
+						tagsPyramidMember = true
+					}
+				case 9735:
+					// in this case the 'P' is the original author
+					sender = pubkey
+				}
 			}
 		}
 	}
@@ -122,14 +180,12 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 		return true, "blocked: you are blocked"
 	}
 
-	if slices.Contains(moneyKinds, evt.Kind) {
-		// if this is money we'll accept it from anyone
-
+	if slices.Contains([]nostr.Kind{9735, 9321}, evt.Kind) {
+		// if this is money we must check if it's tagging only us
 		if pTagCount != 1 {
 			return true, "zap can only have one 'p' tag"
 		}
 
-		// if we only have one tag and we know it tags at least one pyramid member that means this is it
 		receiver, _ := nostr.PubKeyFromHex(evt.Tags.Find("p")[1])
 		switch evt.Kind {
 		case 9735:
@@ -172,8 +228,15 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 
 		// upon getting a valid money event we reset the paywall cache for that person
 		global.ResetPaywallCache(receiver, evt.PubKey)
-	} else if !aggregatedWoT.Contains(evt.PubKey) {
-		// otherwise it must be someone in the relay combined extended network
+	}
+
+	// ensure this comes from someone in the relay combined extended network
+	if !aggregatedWoT.Contains(sender) {
+		if evt.Kind == 9735 && sender == evt.PubKey {
+			// we'll make an exception for zap providers that do not include the "P" temporarily
+			return false, ""
+		}
+
 		return true, "blocked: you're not in the extended network of this relay"
 	}
 

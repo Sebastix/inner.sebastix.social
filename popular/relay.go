@@ -21,6 +21,8 @@ var (
 )
 
 func Init() {
+	Relay = khatru.NewRelay()
+
 	if global.Settings.Popular.Enabled {
 		// relay enabled
 		setupEnabled()
@@ -31,18 +33,19 @@ func Init() {
 }
 
 func setupDisabled() {
-	Relay = khatru.NewRelay()
-	Relay.Router().HandleFunc("/"+global.Settings.Popular.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	global.CleanupRelay(Relay)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Popular.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		popularPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Popular.HTTPBasePath+"/enable", enableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Popular.HTTPBasePath+"/enable", enableHandler)
+	Relay.SetRouter(mux)
 }
 
 func setupEnabled() {
 	db := global.IL.Popular
-
-	Relay = khatru.NewRelay()
 
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Popular.HTTPBasePath
 
@@ -61,12 +64,12 @@ func setupEnabled() {
 	}
 
 	// cache pinned event at startup
-	global.CachePinnedEvent("popular")
+	global.CachePinnedEvent(global.RelayPopular)
 
 	Relay.UseEventstore(db, 500)
 
 	// use custom QueryStored with pinned event support
-	Relay.QueryStored = global.QueryStoredWithPinned("popular")
+	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayPopular)
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
 	Relay.Info.Self = &pk
@@ -84,11 +87,13 @@ func setupEnabled() {
 		return true, "restricted: read-only relay"
 	}
 
-	Relay.Router().HandleFunc("/"+global.Settings.Popular.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Popular.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		popularPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Popular.HTTPBasePath+"/disable", disableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Popular.HTTPBasePath+"/disable", disableHandler)
+	Relay.SetRouter(mux)
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
@@ -177,11 +182,23 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 		return fmt.Errorf("not authenticated")
 	}
 
-	if !pyramid.IsRoot(caller) {
-		return fmt.Errorf("must be a root user to ban an event")
+	// allow if caller is a root user
+	if pyramid.IsRoot(caller) {
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("popular banevent called by root")
+	} else {
+		// check if the caller is the author of the event being banned
+		var isAuthor bool
+		for evt := range global.IL.Popular.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.PubKey == caller {
+				isAuthor = true
+				break
+			}
+		}
+		if !isAuthor {
+			return fmt.Errorf("must be a root user or the event author to ban an event")
+		}
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("popular banevent called by author")
 	}
-
-	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("popular banevent called")
 
 	return global.IL.Popular.DeleteEvent(id)
 }

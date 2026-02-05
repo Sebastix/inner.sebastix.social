@@ -25,6 +25,8 @@ var (
 )
 
 func Init() {
+	Relay = khatru.NewRelay()
+
 	if global.Settings.Inbox.Enabled {
 		// relay enabled
 		setupEnabled()
@@ -35,16 +37,18 @@ func Init() {
 }
 
 func setupDisabled() {
-	Relay = khatru.NewRelay()
-	Relay.Router().HandleFunc("/"+global.Settings.Inbox.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	global.CleanupRelay(Relay)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Inbox.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		inboxPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Inbox.HTTPBasePath+"/enable", enableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Inbox.HTTPBasePath+"/enable", enableHandler)
+	Relay.SetRouter(mux)
 }
 
 func setupEnabled() {
-	Relay = khatru.NewRelay()
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Inbox.HTTPBasePath
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
@@ -140,13 +144,15 @@ func setupEnabled() {
 		return info
 	}
 
-	Relay.Router().HandleFunc("/"+global.Settings.Inbox.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Inbox.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		inboxPage(loggedUser).Render(r.Context(), w)
 	})
 
-	Relay.Router().HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/disable", disableHandler)
-	Relay.Router().HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/check-wot", checkWoTHandler)
+	mux.HandleFunc("POST /"+global.Settings.Inbox.HTTPBasePath+"/disable", disableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Inbox.HTTPBasePath+"/check-wot", checkWoTHandler)
+	Relay.SetRouter(mux)
 
 	// compute aggregated WoT in background every 48h
 	go func() {
@@ -332,11 +338,37 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 		return fmt.Errorf("not authenticated")
 	}
 
-	if !pyramid.IsRoot(caller) {
-		return fmt.Errorf("must be a root user to ban an event")
+	// allow if caller is a root user
+	if pyramid.IsRoot(caller) {
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("inbox banevent called by root")
+	} else {
+		// check if the caller is the author of the event being banned
+		var isAuthorOrRecipient bool
+		for evt := range global.IL.Inbox.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.PubKey == caller {
+				isAuthorOrRecipient = true
+				break
+			} else if evt.Tags.FindWithValue("p", caller.Hex()) != nil ||
+				evt.Tags.FindWithValue("P", caller.Hex()) != nil {
+				isAuthorOrRecipient = true
+			}
+		}
+		if !isAuthorOrRecipient {
+			for evt := range global.IL.Secret.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+				if evt.PubKey == caller {
+					isAuthorOrRecipient = true
+					break
+				} else if evt.Tags.FindWithValue("p", caller.Hex()) != nil ||
+					evt.Tags.FindWithValue("P", caller.Hex()) != nil {
+					isAuthorOrRecipient = true
+				}
+			}
+		}
+		if !isAuthorOrRecipient {
+			return fmt.Errorf("must be a root user, the event author or the event recipient to ban an event")
+		}
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("inbox banevent called by author or recipient")
 	}
-
-	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("inbox banevent called")
 
 	// Delete from both database layers
 	if err := global.IL.Inbox.DeleteEvent(id); err != nil {

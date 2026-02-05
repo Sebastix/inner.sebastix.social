@@ -81,10 +81,24 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 	if !ok {
 		return fmt.Errorf("not authenticated")
 	}
-	if !pyramid.IsRoot(caller) {
-		return fmt.Errorf("must be a root user to ban an event")
+
+	// allow if caller is a root user
+	if pyramid.IsRoot(caller) {
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called by root")
+	} else {
+		// check if the caller is the author of the event being banned
+		var isAuthor bool
+		for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.PubKey == caller {
+				isAuthor = true
+				break
+			}
+		}
+		if !isAuthor {
+			return fmt.Errorf("must be a root user or the event author to ban an event")
+		}
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called by author")
 	}
-	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called")
 
 	return deleteFromMain(id)
 }
@@ -132,11 +146,7 @@ func changeRelayIconHandler(ctx context.Context, icon string) error {
 }
 
 func listAllowedKindsHandler(ctx context.Context) ([]nostr.Kind, error) {
-	if len(global.Settings.AllowedKinds) > 0 {
-		return global.Settings.AllowedKinds, nil
-	} else {
-		return supportedKindsDefault, nil
-	}
+	return global.GetAllowedKinds(), nil
 }
 
 func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
@@ -150,8 +160,8 @@ func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	log.Info().Str("caller", caller.Hex()).Uint16("kind", uint16(kind)).Msg("management allowkind called")
 
 	if len(global.Settings.AllowedKinds) == 0 {
-		global.Settings.AllowedKinds = make([]nostr.Kind, len(supportedKindsDefault))
-		copy(global.Settings.AllowedKinds, supportedKindsDefault)
+		global.Settings.AllowedKinds = make([]nostr.Kind, len(global.SupportedKindsDefault))
+		copy(global.Settings.AllowedKinds, global.SupportedKindsDefault)
 	}
 
 	// check if kind is already in the list, otherwise add it in the correct position
@@ -178,8 +188,8 @@ func disallowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	log.Info().Str("caller", caller.Hex()).Uint16("kind", uint16(kind)).Msg("management disallowkind called")
 
 	if len(global.Settings.AllowedKinds) == 0 {
-		global.Settings.AllowedKinds = make([]nostr.Kind, len(supportedKindsDefault))
-		copy(global.Settings.AllowedKinds, supportedKindsDefault)
+		global.Settings.AllowedKinds = make([]nostr.Kind, len(global.SupportedKindsDefault))
+		copy(global.Settings.AllowedKinds, global.SupportedKindsDefault)
 	}
 
 	// find and remove the kind from the list

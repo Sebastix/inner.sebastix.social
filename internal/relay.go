@@ -21,6 +21,8 @@ var (
 )
 
 func Init() {
+	Relay = khatru.NewRelay()
+
 	if global.Settings.Internal.Enabled {
 		// relay enabled
 		setupEnabled()
@@ -31,18 +33,19 @@ func Init() {
 }
 
 func setupDisabled() {
-	Relay = khatru.NewRelay()
-	Relay.Router().HandleFunc("/"+global.Settings.Internal.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	global.CleanupRelay(Relay)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Internal.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		internalPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/enable", enableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/enable", enableHandler)
+	Relay.SetRouter(mux)
 }
 
 func setupEnabled() {
 	db := global.IL.Internal
-
-	Relay = khatru.NewRelay()
 
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Internal.HTTPBasePath
 
@@ -61,12 +64,12 @@ func setupEnabled() {
 	}
 
 	// cache pinned event at startup
-	global.CachePinnedEvent("internal")
+	global.CachePinnedEvent(global.RelayInternal)
 
 	Relay.UseEventstore(db, 500)
 
 	// use custom QueryStored with pinned event support
-	Relay.QueryStored = global.QueryStoredWithPinned("internal")
+	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayInternal)
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
 	Relay.Info.Self = &pk
@@ -98,7 +101,7 @@ func setupEnabled() {
 		policies.PreventLargeContent(10000),
 		policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
 		policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
-		policies.RestrictToSpecifiedKinds(true, 1, 11, 1111, 1444, 1244, 20, 21, 22, 31924, 31925, 31922, 31923, 30818),
+		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		policies.OnlyAllowNIP70ProtectedEvents,
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if pyramid.IsMember(evt.PubKey) {
@@ -108,11 +111,13 @@ func setupEnabled() {
 		},
 	)
 
-	Relay.Router().HandleFunc("/"+global.Settings.Internal.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+global.Settings.Internal.HTTPBasePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
 		internalPage(loggedUser).Render(r.Context(), w)
 	})
-	Relay.Router().HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/disable", disableHandler)
+	mux.HandleFunc("POST /"+global.Settings.Internal.HTTPBasePath+"/disable", disableHandler)
+	Relay.SetRouter(mux)
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
@@ -201,11 +206,23 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 		return fmt.Errorf("not authenticated")
 	}
 
-	if !pyramid.IsRoot(caller) {
-		return fmt.Errorf("must be a root user to ban an event")
+	// allow if caller is a root user
+	if pyramid.IsRoot(caller) {
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("internal banevent called by root")
+	} else {
+		// check if the caller is the author of the event being banned
+		var isAuthor bool
+		for evt := range global.IL.Internal.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.PubKey == caller {
+				isAuthor = true
+				break
+			}
+		}
+		if !isAuthor {
+			return fmt.Errorf("must be a root user or the event author to ban an event")
+		}
+		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("internal banevent called by author")
 	}
-
-	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("internal banevent called")
 
 	return global.IL.Internal.DeleteEvent(id)
 }
