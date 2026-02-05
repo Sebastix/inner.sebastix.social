@@ -21,7 +21,7 @@ templ settingsPage(loggedUser nostr.PubKey) {
 			</div>
 			<!-- relay metadata -->
 			@layout.RelayMetadata(global.RelayMain,
-				global.Settings.RelayName, global.Settings.RelayDescription, global.Settings.RelayIcon,
+				global.Settings.RelayPubkey, global.Settings.RelayName, global.Settings.RelayDescription, global.Settings.RelayIcon,
 				global.Settings.Pinned)
 			<!-- theme colors -->
 			<form

@@ -9,7 +9,7 @@ import (
 templ SubRelaySettings(
 	relayId global.RelayID,
 	enabled bool,
-	name, description, icon string,
+	pubkey nostr.PubKey, name, description, icon string,
 	pinned nostr.ID,
 	httpBasePath string,
 ) {
@@ -27,7 +27,7 @@ templ SubRelaySettings(
 		} else {
 			<details>
 				<summary class="mb-4 cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">relay metadata settings</summary>
-				@RelayMetadata(relayId, name, description, icon, pinned)
+				@RelayMetadata(relayId, pubkey, name, description, icon, pinned)
 			</details>
 			{ children... }
 			<details>
@@ -79,10 +79,11 @@ templ SubRelaySettings(
 	</div>
 }
 
-templ RelayMetadata(relayId global.RelayID, name, description, icon string, pinned nostr.ID) {
+templ RelayMetadata(relayId global.RelayID, pubkey nostr.PubKey, name, description, icon string, pinned nostr.ID) {
 	<div
 		class="space-y-6"
 		x-data={ `{
+			pubkey: ` + global.JSONString(pubkey) + `,
 			name: ` + global.JSONString(name) + `,
 			description: ` + global.JSONString(description) + `,
 			icon: ` + global.JSONString(icon) + `,
@@ -119,16 +120,16 @@ templ RelayMetadata(relayId global.RelayID, name, description, icon string, pinn
 				<div>
 					<label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_pubkey" }>relay pubkey</label>
 					<input
-            type="text"
-            name={ relayId + "_pubkey" }
-            placeholder="leave empty to use default"
-            class="w-full px-4 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100"
-            x-model="pubkey"
-            @blur="saveSettings()"
-          />
-			  </div>
-			  <div>
-			    <label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_name" }>relay name</label>
+						type="text"
+						name={ relayId + "_pubkey" }
+						placeholder="leave empty to use default"
+						class="w-full px-4 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100"
+						x-model="pubkey"
+						@blur="saveSettings()"
+					/>
+				</div>
+				<div>
+					<label class="block text-sm font-medium mb-2 dark:text-stone-300" for={ relayId + "_name" }>relay name</label>
 					<input
 						type="text"
 						name={ relayId + "_name" }
