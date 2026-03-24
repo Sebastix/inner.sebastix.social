@@ -375,6 +375,19 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				if v[0] == "always" || v[0] == "when_no_pow" || v[0] == "" {
 					global.Settings.Inbox.RequireAuthForDM = v[0]
 				}
+			case "inbox_allowed_kinds":
+				kinds := make([]nostr.Kind, 0, len(v[0])*6)
+				for _, s := range strings.Split(v[0], ",") {
+					if kind, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16); err == nil {
+						kinds = append(kinds, nostr.Kind(kind))
+					}
+				}
+				if len(kinds) == 0 {
+					global.Settings.Inbox.AllowedKinds = nil
+				} else {
+					global.Settings.Inbox.AllowedKinds = kinds
+					slices.Sort(global.Settings.Inbox.AllowedKinds)
+				}
 			case "inbox_specifically_blocked":
 				var blocked []nostr.PubKey
 				for _, s := range v {

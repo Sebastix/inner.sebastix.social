@@ -77,6 +77,7 @@ type UserSettings struct {
 	Inbox struct {
 		RelayMetadata
 		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
+		AllowedKinds        []nostr.Kind   `json:"allowed_kinds,omitempty"`
 		HellthreadLimit     int            `json:"hellthread_limit"`
 		MinDMPoW            int            `json:"min_dm_pow"`
 		RequireAuthForDM    string         `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"

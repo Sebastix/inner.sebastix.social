@@ -27,6 +27,8 @@ var (
 func Init() {
 	Relay = khatru.NewRelay()
 
+	slices.Sort(supportedKindsDefault)
+
 	if global.Settings.Inbox.Enabled {
 		// relay enabled
 		setupEnabled()

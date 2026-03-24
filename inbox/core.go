@@ -15,11 +15,14 @@ import (
 )
 
 var (
-	allowedKinds  = []nostr.Kind{9802, 1, 1111, 11, 1244, 1222, 30818, 20, 21, 22, 30023, 9735, 9321}
 	secretKinds   = []nostr.Kind{1059}
 	aggregatedWoT WotXorFilter
 	wotComputed   = false
 )
+
+var supportedKindsDefault = []nostr.Kind{
+	1, 6, 7, 11, 20, 21, 22, 9321, 9735, 1111, 1222, 1244, 9802, 30023, 30818,
+}
 
 func rejectFilter(ctx context.Context, filter nostr.Filter) (bool, string) {
 	// check if filter includes secret kinds
@@ -194,7 +197,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	}
 
 	// here are normal mentions
-	if !slices.Contains(allowedKinds, evt.Kind) {
+	if !slices.Contains(getAllowedKinds(), evt.Kind) {
 		return true, "blocked: event kind not allowed"
 	}
 
@@ -260,4 +263,11 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	}
 
 	return false, ""
+}
+
+func getAllowedKinds() []nostr.Kind {
+	if len(global.Settings.Inbox.AllowedKinds) > 0 {
+		return global.Settings.Inbox.AllowedKinds
+	}
+	return supportedKindsDefault
 }
