@@ -51,7 +51,10 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 	// check allowed kinds:
 	switch {
 	case event.Kind.IsEphemeral():
-		// allow all ephemeral
+		// ephemeral events from non-members may be allowed or not
+		if global.Settings.AllowEphemeralEventsFromAnyone {
+			return false, ""
+		}
 	case event.Kind == 1163 && global.Settings.Paywall.Enabled:
 		// allow 1163 if paywall is enabled
 	default:
@@ -151,11 +154,6 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 			return true, "restricted: can't leave if you're not a member"
 		}
 		return false, "goodbye"
-	}
-
-	// allow ephemeral from anyone
-	if event.Kind.IsEphemeral() {
-		return false, ""
 	}
 
 	// for all other events we only accept stuff from members

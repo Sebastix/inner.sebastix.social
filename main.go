@@ -272,7 +272,7 @@ func main() {
 			}
 		} else {
 			// normal logic
-			if err := validateMainRelaySchema(event); err != nil {
+			if err := validateSchema(event); err != nil {
 				return true, "schema validation failed: " + err.Error()
 			}
 			return policies.SeqEvent(
