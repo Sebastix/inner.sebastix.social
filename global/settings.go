@@ -42,6 +42,7 @@ type UserSettings struct {
 	MaxEventSize            int    `json:"max_event_size"`
 	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
 	AcceptScheduledEvents   bool   `json:"accept_scheduled_events"`
+	ValidateSchema          bool   `json:"validate_schema"`
 	Search                  struct {
 		Enable    bool     `json:"enable"`
 		Languages []string `json:"languages"`

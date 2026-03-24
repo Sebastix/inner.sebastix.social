@@ -247,10 +247,11 @@ templ settingsPage(loggedUser nostr.PubKey) {
 					nip05Enabled: ` + fmt.Sprint(global.Settings.NIP05.Enabled) + `,
 					maxInvitesPerPerson: ` + global.JSONString(global.Settings.GetMaxInvitesDisplay()) + `,
 					maxEventSize: ` + fmt.Sprint(global.Settings.MaxEventSize) + `,
-				requireCurrentTimestamp: ` + fmt.Sprint(global.Settings.RequireCurrentTimestamp) + `,
-				acceptScheduledEvents: ` + fmt.Sprint(global.Settings.AcceptScheduledEvents) + `,
-				browseUri: ` + global.JSONString(global.Settings.BrowseURI) + `,
-				linkUrl: ` + global.JSONString(global.Settings.LinkURL) + `,
+					requireCurrentTimestamp: ` + fmt.Sprint(global.Settings.RequireCurrentTimestamp) + `,
+					acceptScheduledEvents: ` + fmt.Sprint(global.Settings.AcceptScheduledEvents) + `,
+					validateSchema: ` + fmt.Sprint(global.Settings.ValidateSchema) + `,
+					browseUri: ` + global.JSONString(global.Settings.BrowseURI) + `,
+					linkUrl: ` + global.JSONString(global.Settings.LinkURL) + `,
 					saved: false,
 					async saveSettings() {
 						const response = await fetch(this.$refs.form.action, {
@@ -292,6 +293,20 @@ templ settingsPage(loggedUser nostr.PubKey) {
 							accept scheduled events
 						</label>
 						<input type="hidden" name="accept_scheduled_events" value="off"/>
+					</div>
+					<div class="flex items-center">
+						<input
+							type="checkbox"
+							name="validate_schema"
+							id="validate_schema"
+							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
+							x-model="validateSchema"
+							@change="saveSettings()"
+						/>
+						<label for="validate_schema" class="ml-2 text-sm font-medium dark:text-stone-300">
+							validate main relay events against schema
+						</label>
+						<input type="hidden" name="validate_schema" value="off"/>
 					</div>
 					<div>
 						<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="max_invites_per_person">max invites per person</label>

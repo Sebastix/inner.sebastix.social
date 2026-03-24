@@ -63,6 +63,11 @@ func main() {
 			return
 		}
 	}
+	if global.Settings.ValidateSchema {
+		if err := setSchemaValidator(true); err != nil {
+			log.Error().Err(err).Msg("failed to load schema validator")
+		}
+	}
 	defer groups.ShutdownEmbeddedLiveKit()
 	defer global.End()
 	defer search.End()
@@ -267,6 +272,9 @@ func main() {
 			}
 		} else {
 			// normal logic
+			if err := validateMainRelaySchema(event); err != nil {
+				return true, "schema validation failed: " + err.Error()
+			}
 			return policies.SeqEvent(
 				policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
 				policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
@@ -303,7 +311,6 @@ func main() {
 				paywall.RecomputeMemberPaywall(ctx, by)
 			}
 		}
-
 	}
 
 	relay.OnEventDeleted = handleDeleted

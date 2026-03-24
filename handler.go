@@ -144,6 +144,13 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.RequireCurrentTimestamp = v[0] == "on"
 			case "accept_scheduled_events":
 				global.Settings.AcceptScheduledEvents = v[0] == "on"
+			case "validate_schema":
+				enabled := v[0] == "on"
+				if err := setSchemaValidator(enabled); err != nil {
+					http.Error(w, "failed to load schema validator: "+err.Error(), 500)
+					return
+				}
+				global.Settings.ValidateSchema = enabled
 			case "custom_update_source":
 				customUpdateSource = v[0]
 				fetchLatestVersion()
