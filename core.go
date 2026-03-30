@@ -19,6 +19,7 @@ import (
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/internal"
+	"github.com/fiatjaf/pyramid/paywall"
 	"github.com/fiatjaf/pyramid/pyramid"
 	"github.com/fiatjaf/pyramid/search"
 )
@@ -38,9 +39,22 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		}
 	}
 
+	// if a member has referenced a list on his paywall settings we'll accept that
+	if global.Settings.Paywall.Enabled {
+		if event.Kind.IsReplaceable() || event.Kind.IsAddressable() {
+			if is := paywall.IsReferenced(event); is {
+				return false, ""
+			}
+		}
+	}
+
 	// check allowed kinds:
-	// allow all ephemeral
-	if !event.Kind.IsEphemeral() {
+	switch {
+	case event.Kind.IsEphemeral():
+		// allow all ephemeral
+	case event.Kind == 1163 && global.Settings.Paywall.Enabled:
+		// allow 1163 if paywall is enabled
+	default:
 		kinds := global.GetAllowedKinds()
 		if _, allowed := slices.BinarySearch(kinds, nostr.Kind(event.Kind)); !allowed {
 			return true, fmt.Sprintf("event kind %d not allowed", event.Kind)
@@ -49,6 +63,15 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 
 	// handle special kinds
 	switch event.Kind {
+	case 1163:
+		// NIP-63 events - only accept from relay members when paywall is enabled
+		if !global.Settings.Paywall.Enabled {
+			return true, "kind 1163 not supported: paywall disabled"
+		}
+		if !pyramid.IsMember(event.PubKey) {
+			return true, "not authorized: only relay members can publish kind 1163 events"
+		}
+		return false, ""
 	case 9735:
 		// we accept outgoing zaps if they include a zap receipt from a member
 		ok := false
@@ -140,6 +163,14 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		return false, ""
 	}
 
+	// validate nip63 logic
+	if event.Tags.Find("nip63") != nil {
+		// if event has nip63 tag, it must also have "-" tag
+		if !nip70.IsProtected(event) {
+			return true, "nip63 tag requires '-' tag"
+		}
+	}
+
 	return true, "not authorized"
 }
 
@@ -224,19 +255,26 @@ func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 		}
 
 		// normal query
-		if global.Settings.Paywall.AmountSats > 0 && global.Settings.Paywall.PeriodDays > 0 {
+		if global.Settings.Paywall.Enabled {
 			// use this special query that filters content for paying visitors
 			authed := khatru.GetAllAuthed(ctx)
 
 			for evt := range global.IL.Main.QueryEvents(filter, 500) {
-				if nip70.IsProtected(evt) && (global.Settings.Paywall.Tag == "" || evt.Tags.FindWithValue("t", global.Settings.Paywall.Tag) != nil) {
+				if evt.Tags.Has("nip63") {
 					// this is a paywalled event, check if reader can read
 					for _, pk := range authed {
-						if global.CanReadPaywalled(evt.PubKey, pk) {
+						if paywall.CanRead(evt.PubKey, pk) {
 							if !yield(evt) {
 								return
 							}
 							break
+						}
+					}
+				} else if evt.Kind == 1163 {
+					// hide paywall reader lists except from their author
+					if khatru.IsAuthed(ctx, evt.PubKey) {
+						if !yield(evt) {
+							return
 						}
 					}
 				} else {
@@ -259,7 +297,7 @@ func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 
 func onConnect(ctx context.Context) {
 	// if there is a paywall give the reader the option to auth
-	if global.Settings.Paywall.AmountSats > 0 && global.Settings.Paywall.PeriodDays > 0 {
+	if global.Settings.Paywall.Enabled {
 		khatru.RequestAuth(ctx)
 	}
 }
@@ -274,11 +312,11 @@ func preventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Eve
 
 	// main relay logic:
 	// if there is a paywall check for it here
-	if global.Settings.Paywall.AmountSats > 0 && global.Settings.Paywall.PeriodDays > 0 {
-		if nip70.IsProtected(event) && (global.Settings.Paywall.Tag == "" || event.Tags.FindWithValue("t", global.Settings.Paywall.Tag) != nil) {
+	if global.Settings.Paywall.Enabled {
+		if nip70.IsProtected(event) && event.Tags.Has("nip63") {
 			// this is a paywalled event, check if reader can read
 			for _, pk := range ws.AuthedPublicKeys {
-				if global.CanReadPaywalled(event.PubKey, pk) {
+				if paywall.CanRead(event.PubKey, pk) {
 					// if they can read we're fine broadcasting this
 					return false
 				}
@@ -519,4 +557,17 @@ func queryNormal(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 
 	// otherwise only query the main db
 	return queryMain(ctx, filter)
+}
+
+func handleDeleted(ctx context.Context, deleted nostr.Event) {
+	if deleted.Kind == 1163 {
+		paywall.RecomputeMemberPaywall(ctx, deleted.PubKey)
+		return
+	}
+
+	if deleted.Kind.IsReplaceable() || deleted.Kind.IsAddressable() {
+		for by := range paywall.ReferencedBy(deleted) {
+			paywall.RecomputeMemberPaywall(ctx, by)
+		}
+	}
 }

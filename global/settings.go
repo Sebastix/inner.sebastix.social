@@ -50,9 +50,7 @@ type UserSettings struct {
 	} `json:"search"`
 
 	Paywall struct {
-		Tag        string `json:"tag"`
-		AmountSats uint   `json:"amount_sats"`
-		PeriodDays uint   `json:"period_days"`
+		Enabled bool `json:"enable"`
 	} `json:"paywall"`
 
 	NIP05 struct {
@@ -83,10 +81,15 @@ type UserSettings struct {
 		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
 		HellthreadLimit     int            `json:"hellthread_limit"`
 		MinDMPoW            int            `json:"min_dm_pow"`
+		RequireAuthForDM    string         `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
 	} `json:"inbox"`
 
 	Groups struct {
-		Enabled bool `json:"enabled"`
+		Enabled                bool   `json:"enabled"`
+		EmbeddedLiveKitEnabled bool   `json:"embedded_livekit_enabled"`
+		LiveKitServerURL       string `json:"livekit_server_url"`
+		LiveKitAPIKey          string `json:"livekit_apikey"`
+		LiveKitAPISecret       string `json:"livekit_apisecret"`
 	} `json:"groups"`
 
 	Grasp struct {
@@ -94,8 +97,9 @@ type UserSettings struct {
 	} `json:"grasp"`
 
 	Blossom struct {
-		Enabled           bool `json:"enabled"`
-		MaxUserUploadSize int  `json:"max_user_upload_size,omitempty"` // in megabytes, 0 means unlimited
+		Enabled                      bool  `json:"enabled"`
+		MaxUserUploadSize            int   `json:"max_user_upload_size,omitempty"` // in megabytes, 0 means unlimited
+		MaxUserUploadSizeAtEachLevel []int `json:"max_user_upload_size_at_each_level,omitempty"`
 	} `json:"blossom"`
 
 	Popular struct {
@@ -215,6 +219,17 @@ func (us UserSettings) GetMaxInvitesDisplay() string {
 	return strconv.Itoa(us.MaxInvitesPerPerson)
 }
 
+func (us UserSettings) GetMaxUserUploadSizeDisplay() string {
+	if len(us.Blossom.MaxUserUploadSizeAtEachLevel) > 0 {
+		parts := make([]string, len(us.Blossom.MaxUserUploadSizeAtEachLevel))
+		for i, v := range us.Blossom.MaxUserUploadSizeAtEachLevel {
+			parts[i] = strconv.Itoa(v)
+		}
+		return strings.Join(parts, "/")
+	}
+	return strconv.Itoa(us.Blossom.MaxUserUploadSize)
+}
+
 func getUserSettingsPath() string {
 	return filepath.Join(S.DataPath, "settings.json")
 }
@@ -226,7 +241,7 @@ func loadUserSettings() error {
 		LinkURL:                 "nostr:{code}",
 		MaxInvitesPerPerson:     4,
 		MaxEventSize:            10000,
-		RequireCurrentTimestamp: true,
+		RequireCurrentTimestamp: false,
 		EnableOTS:               true,
 		BlockedIPs:              []string{},
 		AcceptScheduledEvents:   true,
@@ -326,7 +341,7 @@ var SupportedKindsDefault = []nostr.Kind{
 	1063, 1111, 1222, 1244, 1617, 1618, 1619, 1621,
 	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
 	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
-	10005, 10006, 10007, 10009, 10015, 10019, 10030, 10050,
+	10005, 10006, 10007, 10009, 10012, 10015, 10019, 10030, 10050,
 	10063, 10101, 10102, 10317, 17375, 24133, 30000, 30002,
 	30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
 	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,

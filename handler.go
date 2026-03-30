@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +21,7 @@ import (
 	"github.com/fiatjaf/pyramid/blossom"
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
@@ -144,11 +146,40 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.EnableOTS = v[0] == "on"
 			case "accept_scheduled_events":
 				global.Settings.AcceptScheduledEvents = v[0] == "on"
+			case "custom_update_source":
+				customUpdateSource = v[0]
+				fetchLatestVersion()
+			case "livekit_server_url":
+				if groups.LiveKitEmbedded {
+					if err := groups.StopEmbeddedLiveKit(); err != nil {
+						http.Error(w, "failed to stop embedded livekit: "+err.Error(), 500)
+						return
+					}
+				}
+				u, err := url.Parse(v[0])
+				if err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "ws" || u.Scheme == "wss") {
+					u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
+					global.Settings.Groups.LiveKitServerURL = u.String()
+				}
+			case "livekit_api_key":
+				global.Settings.Groups.LiveKitAPIKey = v[0]
+			case "livekit_api_secret":
+				global.Settings.Groups.LiveKitAPISecret = v[0]
 			case "enable_search":
 				wasEnabled := global.Settings.Search.Enable
 				global.Settings.Search.Enable = v[0] == "on"
-				// update timestamp if search is being turned on (was off, now on)
+
+				// close search and disable
+				if wasEnabled && !global.Settings.Search.Enable {
+					search.Main.Close()
+				}
+
+				// initialize search index if search is being turned on (was off, now on)
 				if !wasEnabled && global.Settings.Search.Enable {
+					if err := search.Init(); err != nil {
+						log.Error().Err(err).Msg("failed to initialize search")
+						global.Settings.Search.Enable = false
+					}
 					if err := search.UpdateSearchOn(); err != nil {
 						log.Warn().Err(err).Msg("failed to update search on timestamp")
 					}
@@ -173,15 +204,18 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				if err := search.UpdateLanguagesChange(); err != nil {
 					log.Warn().Err(err).Msg("failed to update languages change timestamp")
 				}
-			case "paywall_tag":
-				global.Settings.Paywall.Tag = v[0]
-			case "paywall_amount":
-				if amt, err := strconv.ParseUint(v[0], 10, 64); err == nil {
-					global.Settings.Paywall.AmountSats = uint(amt)
+			case "root_member_pubkey":
+				if v[0] == "" {
+					continue
 				}
-			case "paywall_period":
-				if days, err := strconv.ParseUint(v[0], 10, 64); err == nil {
-					global.Settings.Paywall.PeriodDays = uint(days)
+				target := global.PubKeyFromInput(v[0])
+				if target == nostr.ZeroPK {
+					http.Error(w, "invalid public key", 400)
+					return
+				}
+				if err := pyramid.AddAction(pyramid.ActionInvite, pyramid.AbsoluteKey, target); err != nil {
+					http.Error(w, "failed to add root user: "+err.Error(), 500)
+					return
 				}
 				//
 				// nip-05 settings
@@ -339,6 +373,10 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.Inbox.HellthreadLimit, _ = strconv.Atoi(v[0])
 			case "inbox_min_dm_pow":
 				global.Settings.Inbox.MinDMPoW, _ = strconv.Atoi(v[0])
+			case "inbox_require_auth_for_dm":
+				if v[0] == "always" || v[0] == "when_no_pow" || v[0] == "" {
+					global.Settings.Inbox.RequireAuthForDM = v[0]
+				}
 			case "inbox_specifically_blocked":
 				var blocked []nostr.PubKey
 				for _, s := range v {
@@ -389,8 +427,21 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 			case "ftp_password":
 				global.Settings.FTP.Password = v[0]
 			case "blossom_max_user_upload_size":
-				if maxSizeMB, err := strconv.Atoi(v[0]); err == nil {
-					global.Settings.Blossom.MaxUserUploadSize = maxSizeMB
+				if strings.Contains(v[0], "/") {
+					parts := strings.Split(v[0], "/")
+					levels := make([]int, 0, len(parts))
+					for _, p := range parts {
+						if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+							levels = append(levels, n)
+						}
+					}
+					if len(levels) > 0 {
+						global.Settings.Blossom.MaxUserUploadSizeAtEachLevel = levels
+						global.Settings.Blossom.MaxUserUploadSize = 0
+					}
+				} else {
+					global.Settings.Blossom.MaxUserUploadSize, _ = strconv.Atoi(v[0])
+					global.Settings.Blossom.MaxUserUploadSizeAtEachLevel = nil
 				}
 			}
 		}
@@ -614,7 +665,9 @@ func setupDomain(domain string) error {
 	uppermost.Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Uppermost.HTTPBasePath
 
 	blossom.BlobIndex.ServiceURL = global.Settings.HTTPScheme() + global.Settings.Domain
-	blossom.Server.ServiceURL = blossom.BlobIndex.ServiceURL
+	if blossom.Server != nil {
+		blossom.Server.ServiceURL = blossom.BlobIndex.ServiceURL
+	}
 
 	go restartSoon()
 	return nil
@@ -656,6 +709,22 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		if customUpdateSource != "" {
+			version, err := resolveCustomUpdateSource(customUpdateSource)
+			if err != nil {
+				http.Error(w, "failed to resolve custom update source: "+err.Error(), 400)
+				return
+			}
+			latestVersion = version
+		} else {
+			version, err := fetchLatestFromGitHub("fiatjaf/pyramid")
+			if err != nil {
+				http.Error(w, "failed to fetch latest version: "+err.Error(), 500)
+				return
+			}
+			latestVersion = version
+		}
+
 		// if the update is successful the process will restart so this function will never return
 		if err := performUpdateInPlace(); err != nil {
 			log.Error().Err(err).Msg("update failed")
@@ -667,6 +736,22 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unexpected: update done, but couldn't restart the server (or something else)", 500)
 		return
 	}
+}
+
+func restartHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	go restartSoon()
+	fmt.Fprint(w, "restarting")
 }
 
 func forumHandler(w http.ResponseWriter, r *http.Request) {
@@ -764,7 +849,15 @@ func memberPageHandler(w http.ResponseWriter, r *http.Request) {
 		mainStats, _ = global.IL.Main.ComputeStats(mmm.StatsOptions{OnlyPubKey: user})
 	}
 
-	memberPage(loggedUser, user, nip05, mainStats).Render(r.Context(), w)
+	// compute blossom used storage
+	var blossomUsed int
+	if global.Settings.Blossom.Enabled {
+		for blob := range blossom.BlobIndex.List(r.Context(), user) {
+			blossomUsed += blob.Size
+		}
+	}
+
+	memberPage(loggedUser, user, nip05, mainStats, blossomUsed).Render(r.Context(), w)
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {

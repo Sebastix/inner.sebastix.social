@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
-	"time"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
@@ -101,12 +100,10 @@ func setupEnabled() {
 		},
 	)
 
-	Relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 20)
-
 	Relay.OnEvent = policies.SeqEvent(
-		policies.PreventLargeContent(10000),
-		policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
-		policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
+		policies.PreventLargeContent(global.Settings.MaxEventSize),
+		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if !pyramid.IsMember(evt.PubKey) {
 				return true, "blocked: this event isn't from a relay member"

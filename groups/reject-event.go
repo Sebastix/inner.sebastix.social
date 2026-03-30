@@ -25,6 +25,12 @@ func (s *GroupsState) RejectEvent(ctx context.Context, event nostr.Event) (rejec
 		return true, "moderation action is too old (older than 1 minute ago)"
 	}
 
+	// metadata events are emitted by the relay itself after applying moderation actions.
+	// external clients must not publish them directly.
+	if nip29.MetadataEventKinds.Includes(event.Kind) {
+		return true, "restricted: group metadata events are generated internally"
+	}
+
 	htag := event.Tags.Find("h")
 	if htag == nil {
 		// events always need an "h" tag
@@ -225,6 +231,18 @@ func (s *GroupsState) RejectEvent(ctx context.Context, event nostr.Event) (rejec
 			if !isPrimaryRole {
 				return true, "can't delete group"
 			}
+		}
+	}
+
+	// check if group supports only specific kinds (if nil we support everything)
+	if group.SupportedKinds != nil {
+		if len(group.SupportedKinds) == 0 && group.LiveKit {
+			// special case, return a nicer message
+			return true, "blocked: this is a live audio/video group only"
+		}
+
+		if !slices.Contains(group.SupportedKinds, event.Kind) {
+			return true, "blocked: kind not supported by this group"
 		}
 	}
 

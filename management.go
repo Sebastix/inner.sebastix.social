@@ -100,7 +100,20 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called by author")
 	}
 
-	return deleteFromMain(id)
+	var deleted nostr.Event
+	for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+		deleted = evt
+	}
+
+	if deleted.PubKey != nostr.ZeroPK {
+		if err := deleteFromMain(id); err != nil {
+			return err
+		}
+
+		handleDeleted(ctx, deleted)
+	}
+
+	return nil
 }
 
 func changeRelayNameHandler(ctx context.Context, name string) error {

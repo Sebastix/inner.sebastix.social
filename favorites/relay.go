@@ -81,12 +81,10 @@ func setupEnabled() {
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
 	)
 
-	Relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 20)
-
 	Relay.OnEvent = policies.SeqEvent(
-		policies.PreventLargeContent(10000),
-		policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
-		policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
+		policies.PreventLargeContent(global.Settings.MaxEventSize),
+		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
 		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			authedPublicKeys := khatru.GetAllAuthed(ctx)

@@ -2,9 +2,11 @@ package groups
 
 import (
 	"net/http"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
+	"github.com/rs/cors"
 
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
@@ -19,7 +21,6 @@ var (
 
 func Init(relay *khatru.Relay) {
 	hostRelay = relay
-
 	if !global.Settings.Groups.Enabled {
 		// relay disabled
 		setupDisabled()
@@ -49,6 +50,9 @@ func setupEnabled() {
 	Handler.mux = http.NewServeMux()
 
 	Handler.mux.HandleFunc("POST /groups/disable", disableHandler)
+	Handler.mux.HandleFunc("POST /groups/livekit/start", startEmbeddedLiveKitHandler)
+	Handler.mux.HandleFunc("POST /groups/livekit/stop", stopEmbeddedLiveKitHandler)
+	Handler.mux.HandleFunc("POST /groups/livekit/webhook", livekitWebhookHandler)
 	Handler.mux.HandleFunc("POST /groups/wipe/{groupId}", wipeGroupHandler)
 	Handler.mux.HandleFunc("/groups/{groupId}", func(w http.ResponseWriter, r *http.Request) {
 		loggedUser, _ := global.GetLoggedUser(r)
@@ -81,6 +85,33 @@ func setupEnabled() {
 		loggedUser, _ := global.GetLoggedUser(r)
 		homeGroupsPage(loggedUser).Render(r.Context(), w)
 	})
+
+	Handler.mux.Handle("/.well-known/nip29/livekit", cors.AllowAll().Handler(http.HandlerFunc(livekitStatusHandler)))
+	Handler.mux.Handle("/.well-known/nip29/livekit/{groupId}", cors.AllowAll().Handler(http.HandlerFunc(livekitAuthHandler)))
+
+	if global.Settings.Groups.EmbeddedLiveKitEnabled && EmbeddedLiveKitAvailable() {
+		go func() {
+			time.Sleep(10 * time.Second)
+			if err := StartEmbeddedLiveKit(); err != nil {
+				log.Error().Err(err).Msg("failed to restore embedded livekit")
+			}
+		}()
+	}
+}
+
+func livekitStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if LiveKitEmbedded && !EmbeddedLiveKitRunning() {
+		w.WriteHeader(404)
+		return
+	}
+
+	if global.Settings.Groups.LiveKitServerURL != "" &&
+		global.Settings.Groups.LiveKitAPIKey != "" &&
+		global.Settings.Groups.LiveKitAPISecret != "" {
+		w.WriteHeader(http.StatusNoContent)
+	} else {
+		w.WriteHeader(404)
+	}
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +142,12 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	global.Settings.Groups.Enabled = false
+	if LiveKitEmbedded {
+		if err := StopEmbeddedLiveKit(); err != nil {
+			http.Error(w, "failed to stop embedded livekit: "+err.Error(), 500)
+			return
+		}
+	}
 
 	if err := global.SaveUserSettings(); err != nil {
 		http.Error(w, "failed to save settings: "+err.Error(), 500)

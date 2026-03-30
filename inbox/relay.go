@@ -120,7 +120,7 @@ func setupEnabled() {
 		}
 		return nil
 	}
-	Relay.StartExpirationManager(Relay.QueryStored, Relay.DeleteEvent)
+	Relay.StartExpirationManager(Relay.QueryStored, Relay.DeleteEvent, nil)
 
 	pk := global.Settings.RelayInternalSecretKey.Public()
 	Relay.Info.Self = &pk
@@ -132,8 +132,13 @@ func setupEnabled() {
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
 		rejectFilter,
 	)
-	Relay.OnEvent = rejectEvent
-	Relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 20)
+	Relay.OnEvent = policies.SeqEvent(
+		policies.PreventNormalDuplicates(global.IL.Inbox.QueryEvents),
+		policies.RejectUnprefixedNostrReferences,
+		policies.EventPubKeyRateLimiter(1, 2*time.Minute, 15),
+		rejectEvent,
+	)
+
 	Relay.OverwriteRelayInformation = func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
 		info.Name = global.Settings.Inbox.GetName()
 		info.Description = global.Settings.Inbox.GetDescription()

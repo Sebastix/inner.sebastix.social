@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"errors"
+	"io"
 	"iter"
 	"net"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +34,7 @@ import (
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/paywall"
 	"github.com/fiatjaf/pyramid/personal"
 	"github.com/fiatjaf/pyramid/popular"
 	"github.com/fiatjaf/pyramid/pyramid"
@@ -59,6 +63,7 @@ func main() {
 			return
 		}
 	}
+	defer groups.ShutdownEmbeddedLiveKit()
 	defer global.End()
 	defer search.End()
 
@@ -123,6 +128,7 @@ func main() {
 	relay.Router().HandleFunc("/u/sync", syncHandler)
 	relay.Router().HandleFunc("/stats", statsHandler)
 	relay.Router().HandleFunc("/update", updateHandler)
+	relay.Router().HandleFunc("/restart", restartHandler)
 	relay.Router().HandleFunc("/icon/{relayId}", iconHandler)
 	relay.Router().HandleFunc("/forum/", forumHandler)
 	relay.Router().HandleFunc("/.well-known/nostr.json", nip05Handler)
@@ -140,6 +146,7 @@ func main() {
 	grasp.Init(relay)
 	groups.Init(relay)
 	blossom.Init(relay)
+	paywall.Init(relay)
 	favorites.Init()
 	inbox.Init()
 	internal.Init()
@@ -183,7 +190,11 @@ func main() {
 		if err := deleteFromMain(id); err != nil {
 			return err
 		}
-		// TODO: prevent deleting from group if too much time has passed
+		for evt := range global.IL.Groups.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.CreatedAt < nostr.Now()-60*60*2 /* 2 hours */ {
+				return errors.New("can't delete very old group message")
+			}
+		}
 		if err := global.IL.Groups.DeleteEvent(id); err != nil {
 			return err
 		}
@@ -200,6 +211,11 @@ func main() {
 		},
 		func(ctx context.Context, id nostr.ID) error {
 			return global.IL.Main.DeleteEvent(id)
+		},
+		func(ctx context.Context, evt nostr.Event) {
+			if relay.OnEventDeleted != nil {
+				relay.OnEventDeleted(ctx, evt)
+			}
 		},
 	)
 
@@ -234,7 +250,6 @@ func main() {
 			return rejectInviteRequestsNonAuthed(ctx, filter)
 		},
 	)
-	// relay.RejectConnection = policies.ConnectionRateLimiter(1, time.Minute*5, 30)
 	relay.OnEvent = func(ctx context.Context, event nostr.Event) (reject bool, msg string) {
 		if len(event.Content) > global.Settings.MaxEventSize {
 			return true, "content is too big"
@@ -263,10 +278,11 @@ func main() {
 		} else {
 			// normal logic
 			return policies.SeqEvent(
-				policies.PreventTooManyIndexableTags(9, []nostr.Kind{3}, nil),
-				policies.PreventTooManyIndexableTags(1200, nil, []nostr.Kind{3}),
+				policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
+				policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
 				policies.RejectUnprefixedNostrReferences,
 				grasp.RejectIncomingEvent,
+				policies.PreventNormalDuplicates(global.IL.Main.QueryEvents),
 				basicRejectionLogic,
 			)(ctx, event)
 		}
@@ -285,6 +301,17 @@ func main() {
 			processReactions(ctx, event)
 		case 0, 3, 10019:
 			global.IL.System.SaveEvent(event)
+		case 1163:
+			// NIP-63 paywall event - already handled in basicRejectionLogic
+			// recompute user paywall to ensure consistency
+			paywall.RecomputeMemberPaywall(ctx, event.PubKey)
+		}
+
+		// any replaceable event can potentially be referenced by a paywall
+		if event.Kind.IsReplaceable() || event.Kind.IsAddressable() {
+			for by := range paywall.ReferencedBy(event) {
+				paywall.RecomputeMemberPaywall(ctx, by)
+			}
 		}
 
 		// trigger opentimestamping of selected event kinds
@@ -295,6 +322,8 @@ func main() {
 			}
 		}
 	}
+
+	relay.OnEventDeleted = handleDeleted
 
 	relay.OnEphemeralEvent = func(ctx context.Context, event nostr.Event) {
 		switch event.Kind {
@@ -341,6 +370,9 @@ func main() {
 		if global.Settings.AcceptScheduledEvents {
 			info.SupportedNIPs = append(info.SupportedNIPs, 16)
 		}
+		if global.Settings.Paywall.Enabled {
+			info.SupportedNIPs = append(info.SupportedNIPs, 63)
+		}
 
 		pk := global.Settings.RelayInternalSecretKey.Public()
 		info.Self = &pk
@@ -378,27 +410,31 @@ var (
 
 func restartSoon() {
 	log.Info().Msg("restarting in 1 second")
+	groups.ShutdownEmbeddedLiveKit()
 	time.Sleep(time.Second * 1)
 	cancelStartContext(restarting)
 }
 
 func start() {
-	var ctx context.Context
-	ctx, cancelStartContext = context.WithCancelCause(context.Background())
+	for {
+		var ctx context.Context
+		ctx, cancelStartContext = context.WithCancelCause(context.Background())
 
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+		ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 
-	if err := run(ctx); err != nil {
-		if context.Cause(ctx) != restarting {
-			log.Debug().Err(err).Msg("exit reason")
-			return
+		err := run(ctx)
+		cause := context.Cause(ctx)
+		cancel()
+
+		if cause == restarting {
+			// start again
+			continue
 		}
-	}
 
-	// restart if it was a restart request
-	if context.Cause(ctx) == restarting {
-		start()
+		if err != nil {
+			log.Debug().Err(err).Msg("exit reason")
+		}
+		return
 	}
 }
 
@@ -422,6 +458,7 @@ func run(ctx context.Context) error {
 
 	mux.Handle("/groups/", groups.Handler)
 	mux.Handle("/groups", groups.Handler)
+	mux.Handle("/.well-known/nip29/", groups.Handler)
 
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath+"/", inbox.Relay)
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath, inbox.Relay)
@@ -435,10 +472,30 @@ func run(ctx context.Context) error {
 	mux.Handle("/"+global.Settings.Moderated.HTTPBasePath+"/", moderated.Relay)
 	mux.Handle("/"+global.Settings.Moderated.HTTPBasePath, moderated.Relay)
 
+	mux.Handle("/paywall/", paywall.Handler)
+	mux.Handle("/paywall", paywall.Handler)
+
 	mux.Handle("/scheduled/", scheduled)
 	mux.Handle("/scheduled", scheduled)
 
 	mux.Handle("/", relay)
+	mainHandler := setupCheckMiddleware(mux)
+	externalHandler := ipBlockMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := strings.TrimSpace(r.Host)
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(host)
+
+		// proxy to livekit server via subdomain
+		if groups.EmbeddedLiveKitAvailable() && host == strings.ToLower("livekit."+global.Settings.Domain) {
+			groups.LiveKitProxyHandler(w, r)
+			return
+		}
+
+		// otherwise handle normally
+		mainHandler.ServeHTTP(w, r)
+	}))
 
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -455,7 +512,7 @@ func run(ctx context.Context) error {
 
 	server := &http.Server{
 		Addr:    global.S.Host + ":" + port,
-		Handler: ipBlockMiddleware(setupCheckMiddleware(mux)),
+		Handler: externalHandler,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
@@ -463,36 +520,150 @@ func run(ctx context.Context) error {
 
 	if port == "443" {
 		manager := &autocert.Manager{
-			Prompt:     func(_ string) bool { return true },
-			HostPolicy: autocert.HostWhitelist(global.Settings.Domain),
-			Cache:      autocert.DirCache("certs"),
+			Prompt: func(_ string) bool { return true },
+			HostPolicy: autocert.HostWhitelist(
+				global.Settings.Domain,
+				"livekit."+global.Settings.Domain,
+				"turn."+global.Settings.Domain,
+			),
+			Cache: autocert.DirCache("certs"),
 		}
 
 		// HTTP server on 80 for ACME challenges and user access
 		httpServer := &http.Server{
 			Addr:    global.S.Host + ":80",
-			Handler: manager.HTTPHandler(mux),
+			Handler: manager.HTTPHandler(externalHandler),
 			BaseContext: func(_ net.Listener) context.Context {
 				return ctx
 			},
 		}
 		g.Go(func() error { return httpServer.ListenAndServe() })
 
+		tlsConfig := manager.TLSConfig()
+		origGetCert := tlsConfig.GetCertificate
+		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.ServerName == "" {
+				// when SNI is missing, use the configured domain.
+				// since Pyramid serves a single domain, there is no ambiguity — we can safely serve its certificate.
+				// see https://github.com/fiatjaf/pyramid/issues/14
+				hello.ServerName = global.Settings.Domain
+			}
+			return origGetCert(hello)
+		}
+
 		// HTTPS server on 443
 		httpsServer := &http.Server{
-			Addr:    global.S.Host + ":443",
-			Handler: ipBlockMiddleware(mux),
+			Addr:      global.S.Host + ":443",
+			Handler:   externalHandler,
+			TLSConfig: tlsConfig,
 			BaseContext: func(_ net.Listener) context.Context {
 				return ctx
 			},
 		}
-		httpsServer.TLSConfig = manager.TLSConfig()
 
-		g.Go(func() error { return httpsServer.ListenAndServeTLS("", "") })
+		livekitServer := &http.Server{
+			Handler: http.HandlerFunc(groups.LiveKitProxyHandler),
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
+		}
+
+		tlsListener := newConnListener(&net.TCPAddr{IP: net.ParseIP(global.S.Host), Port: 443})
+		livekitTLSListener := newConnListener(&net.TCPAddr{IP: net.ParseIP(global.S.Host), Port: 443})
+
+		listener, err := net.Listen("tcp", global.S.Host+":443")
+		if err != nil {
+			return err
+		}
+
+		// accept raw TCP on 443, terminate TLS, then route by SNI
+		g.Go(func() error {
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
+				}
+
+				go func(conn net.Conn) {
+					tlsConn := tls.Server(conn, tlsConfig)
+					if err := tlsConn.Handshake(); err != nil {
+						conn.Close()
+						return
+					}
+
+					serverName := strings.ToLower(tlsConn.ConnectionState().ServerName)
+					if serverName == "" {
+						serverName = strings.ToLower(global.Settings.Domain)
+					}
+
+					switch serverName {
+					case "turn." + strings.ToLower(global.Settings.Domain):
+						if !groups.EmbeddedLiveKitRunning() {
+							tlsConn.Close()
+							return
+						}
+						defer tlsConn.Close()
+
+						backend, err := net.Dial("tcp", "0.0.0.0:5349")
+						if err != nil {
+							tlsConn.Close()
+							return
+						}
+						defer backend.Close()
+
+						errCh := make(chan error, 2)
+						go func() {
+							_, err := io.Copy(backend, tlsConn)
+							errCh <- err
+						}()
+						go func() {
+							_, err := io.Copy(tlsConn, backend)
+							errCh <- err
+						}()
+						<-errCh
+						return
+					case "livekit." + strings.ToLower(global.Settings.Domain):
+						if err := livekitTLSListener.Enqueue(ctx, tlsConn); err != nil {
+							tlsConn.Close()
+						}
+						return
+					default:
+						if err := tlsListener.Enqueue(ctx, tlsConn); err != nil {
+							tlsConn.Close()
+						}
+						return
+					}
+				}(conn)
+			}
+		})
+
+		g.Go(func() error {
+			err := httpsServer.Serve(tlsListener)
+			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		})
+
+		g.Go(func() error {
+			err := livekitServer.Serve(livekitTLSListener)
+			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		})
+
 		log.Info().Msg("running on https://" + global.S.Host + ":443 and http://" + global.S.Host + ":80")
 		g.Go(func() error {
 			<-ctx.Done()
+			listener.Close()
+			tlsListener.Close()
+			livekitTLSListener.Close()
 			httpsServer.Shutdown(context.Background())
+			livekitServer.Shutdown(context.Background())
 			httpServer.Shutdown(context.Background())
 			return nil
 		})
@@ -534,4 +705,45 @@ func setupCheckMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+type connListener struct {
+	addr      net.Addr
+	conns     chan net.Conn
+	closeOnce sync.Once
+}
+
+func newConnListener(addr net.Addr) *connListener {
+	return &connListener{
+		addr:  addr,
+		conns: make(chan net.Conn, 32),
+	}
+}
+
+func (l *connListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.conns
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	return conn, nil
+}
+
+func (l *connListener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.conns)
+	})
+	return nil
+}
+
+func (l *connListener) Addr() net.Addr {
+	return l.addr
+}
+
+func (l *connListener) Enqueue(ctx context.Context, conn net.Conn) error {
+	select {
+	case l.conns <- conn:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
