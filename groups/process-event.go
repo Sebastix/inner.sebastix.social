@@ -23,7 +23,7 @@ func (s *GroupsState) ProcessEvent(ctx context.Context, event nostr.Event) (grou
 			group = s.NewGroup(groupId)
 			s.Groups.Store(groupId, group)
 
-			nostr.AppendUnique(groupsAffected, group)
+			groupsAffected = nostr.AppendUnique(groupsAffected, group)
 
 			// create a put-user event for the creator to ensure membership is recorded
 			addCreator := nostr.Event{
@@ -44,13 +44,13 @@ func (s *GroupsState) ProcessEvent(ctx context.Context, event nostr.Event) (grou
 			}
 
 			for _, affected := range s.ProcessEvent(ctx, addCreator) {
-				nostr.AppendUnique(groupsAffected, affected)
+				groupsAffected = nostr.AppendUnique(groupsAffected, affected)
 			}
 
 			s.broadcast(addCreator)
 		} else {
 			group = s.GetGroupFromEvent(event)
-			nostr.AppendUnique(groupsAffected, group)
+			groupsAffected = nostr.AppendUnique(groupsAffected, group)
 		}
 
 		// apply the moderation action
@@ -112,7 +112,7 @@ func (s *GroupsState) ProcessEvent(ctx context.Context, event nostr.Event) (grou
 		}
 
 		for _, affected := range s.ProcessEvent(ctx, addUser) {
-			nostr.AppendUnique(groupsAffected, affected)
+			groupsAffected = nostr.AppendUnique(groupsAffected, affected)
 		}
 
 		s.broadcast(addUser)
@@ -142,7 +142,7 @@ func (s *GroupsState) ProcessEvent(ctx context.Context, event nostr.Event) (grou
 			}
 
 			for _, affected := range s.ProcessEvent(ctx, removeUser) {
-				nostr.AppendUnique(groupsAffected, affected)
+				groupsAffected = nostr.AppendUnique(groupsAffected, affected)
 			}
 
 			s.broadcast(removeUser)
