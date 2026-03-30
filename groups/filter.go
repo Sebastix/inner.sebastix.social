@@ -13,6 +13,9 @@ func (s *GroupsState) RequestAuthWhenNecessary(
 ) (reject bool, msg string) {
 	authed := khatru.GetAllAuthed(ctx)
 	groupIds, _ := filter.Tags["h"]
+	if len(groupIds) == 0 {
+		groupIds, _ = filter.Tags["d"]
+	}
 
 	for _, groupId := range groupIds {
 		if group, ok := s.Groups.Load(groupId); ok {
