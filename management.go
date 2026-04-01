@@ -7,6 +7,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
+	"fiatjaf.com/nostr/nip19"
 	"fiatjaf.com/nostr/nip86"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
@@ -55,7 +56,7 @@ func listAllowedPubKeysHandler(ctx context.Context) ([]nip86.PubKeyReason, error
 			if inv == pyramid.AbsoluteKey {
 				reason += "root"
 			} else {
-				reason += inv.Hex()
+				reason += "nostr:" + nip19.EncodeNpub(inv)
 			}
 		}
 		list = append(list, nip86.PubKeyReason{PubKey: pubkey, Reason: reason})
