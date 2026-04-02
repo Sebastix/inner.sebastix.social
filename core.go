@@ -55,15 +55,11 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 	}
 
 	// check allowed kinds:
-	switch {
-	case event.Kind.IsEphemeral():
-		// ephemeral events from non-members may be allowed or not
-		if global.Settings.AllowEphemeralEventsFromAnyone {
-			return false, ""
-		}
-	case event.Kind == 1163 && global.Settings.Paywall.Enabled:
+	if event.Kind == 1163 && global.Settings.Paywall.Enabled {
 		// allow 1163 if paywall is enabled
-	default:
+	} else if event.Kind == 28934 || event.Kind == 28936 {
+		// these are always allowed
+	} else {
 		kinds := global.GetAllowedKinds()
 		if _, allowed := slices.BinarySearch(kinds, nostr.Kind(event.Kind)); !allowed {
 			return true, fmt.Sprintf("event kind %d not allowed", event.Kind)

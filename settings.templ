@@ -250,7 +250,6 @@ templ settingsPage(loggedUser nostr.PubKey) {
 					requireCurrentTimestamp: ` + fmt.Sprint(global.Settings.RequireCurrentTimestamp) + `,
 					acceptScheduledEvents: ` + fmt.Sprint(global.Settings.AcceptScheduledEvents) + `,
 					validateSchema: ` + fmt.Sprint(global.Settings.ValidateSchema) + `,
-					allowEphemeralEventsFromAnyone: ` + fmt.Sprint(global.Settings.AllowEphemeralEventsFromAnyone) + `,
 					browseUri: ` + global.JSONString(global.Settings.BrowseURI) + `,
 					linkUrl: ` + global.JSONString(global.Settings.LinkURL) + `,
 					saved: false,
@@ -308,20 +307,6 @@ templ settingsPage(loggedUser nostr.PubKey) {
 							validate main relay events against schema
 						</label>
 						<input type="hidden" name="validate_schema" value="off"/>
-					</div>
-					<div class="flex items-center">
-						<input
-							type="checkbox"
-							name="allow_ephemeral_events_from_anyone"
-							id="allow_ephemeral_events_from_anyone"
-							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
-							x-model="allowEphemeralEventsFromAnyone"
-							@change="saveSettings()"
-						/>
-						<label for="allow_ephemeral_events_from_anyone" class="ml-2 text-sm font-medium dark:text-stone-300">
-							allow non-members to publish ephemeral events
-						</label>
-						<input type="hidden" name="allow_ephemeral_events_from_anyone" value="off"/>
 					</div>
 					<div>
 						<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="max_invites_per_person">max invites per person</label>

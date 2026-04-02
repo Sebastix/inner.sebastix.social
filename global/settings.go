@@ -35,16 +35,15 @@ type UserSettings struct {
 	} `json:"theme"`
 
 	// general
-	BrowseURI                      string `json:"browse_uri"`
-	LinkURL                        string `json:"link_url"`
-	MaxInvitesPerPerson            int    `json:"max_invites_per_person,omitempty"`
-	MaxInvitesAtEachLevel          []int  `json:"max_invites_at_each_level,omitempty"`
-	MaxEventSize                   int    `json:"max_event_size"`
-	RequireCurrentTimestamp        bool   `json:"require_current_timestamp"`
-	AcceptScheduledEvents          bool   `json:"accept_scheduled_events"`
-	ValidateSchema                 bool   `json:"validate_schema"`
-	AllowEphemeralEventsFromAnyone bool   `json:"allow_ephemeral_events_from_anyone"`
-	Search                         struct {
+	BrowseURI               string `json:"browse_uri"`
+	LinkURL                 string `json:"link_url"`
+	MaxInvitesPerPerson     int    `json:"max_invites_per_person,omitempty"`
+	MaxInvitesAtEachLevel   []int  `json:"max_invites_at_each_level,omitempty"`
+	MaxEventSize            int    `json:"max_event_size"`
+	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
+	AcceptScheduledEvents   bool   `json:"accept_scheduled_events"`
+	ValidateSchema          bool   `json:"validate_schema"`
+	Search                  struct {
 		Enable    bool     `json:"enable"`
 		Languages []string `json:"languages"`
 	} `json:"search"`
@@ -237,14 +236,13 @@ func getUserSettingsPath() string {
 func loadUserSettings() error {
 	// start it with the defaults
 	Settings = UserSettings{
-		BrowseURI:                      "https://jumble.social/?r={url}",
-		LinkURL:                        "nostr:{code}",
-		MaxInvitesPerPerson:            4,
-		MaxEventSize:                   10000,
-		RequireCurrentTimestamp:        false,
-		BlockedIPs:                     []string{},
-		AcceptScheduledEvents:          true,
-		AllowEphemeralEventsFromAnyone: true,
+		BrowseURI:               "https://jumble.social/?r={url}",
+		LinkURL:                 "nostr:{code}",
+		MaxInvitesPerPerson:     4,
+		MaxEventSize:            10000,
+		RequireCurrentTimestamp: false,
+		BlockedIPs:              []string{},
+		AcceptScheduledEvents:   true,
 	}
 	Settings.Search.Enable = false
 	Settings.Search.Languages = []string{"en"}
@@ -342,8 +340,9 @@ var SupportedKindsDefault = []nostr.Kind{
 	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
 	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
 	10005, 10006, 10007, 10009, 10012, 10013, 10015, 10019, 10027, 10030, 10050,
-	10063, 10777, 10101, 10102, 10317, 17375, 24133, 30000, 30002,
-	30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
+	10063, 10777, 10101, 10102, 10317, 17375,
+	23194, 23195, 24133,
+	30000, 30002, 30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
 	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,
 	31924, 31925, 39701,
 }
