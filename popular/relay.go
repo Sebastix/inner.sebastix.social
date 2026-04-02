@@ -45,8 +45,6 @@ func setupDisabled() {
 }
 
 func setupEnabled() {
-	db := global.IL.Popular
-
 	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Popular.HTTPBasePath
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
@@ -66,7 +64,7 @@ func setupEnabled() {
 	// cache pinned event at startup
 	global.CachePinnedEvent(global.RelayPopular)
 
-	Relay.UseEventstore(db, 500)
+	Relay.UseEventstore(global.IL.Popular, 500)
 
 	// use custom QueryStored with pinned event support
 	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayPopular)

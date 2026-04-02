@@ -3,7 +3,6 @@ package main
 import (
 	"time"
 
-	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/schema"
 )
 
@@ -39,11 +38,4 @@ func setSchemaValidator(enabled bool) error {
 	}()
 
 	return nil
-}
-
-func validateSchema(event nostr.Event) error {
-	if validator == nil {
-		return nil
-	}
-	return validator.ValidateEvent(event)
 }

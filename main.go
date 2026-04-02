@@ -272,9 +272,6 @@ func main() {
 			}
 		} else {
 			// normal logic
-			if err := validateSchema(event); err != nil {
-				return true, "schema validation failed: " + err.Error()
-			}
 			return policies.SeqEvent(
 				policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
 				policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),

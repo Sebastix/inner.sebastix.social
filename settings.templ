@@ -732,6 +732,7 @@ templ settingsPage(loggedUser nostr.PubKey) {
 				</div>
 			</form>
 			{{ systemStats := getSystemStats() }}
+			{{ relayClients, relayListeners := relay.Stats() }}
 			<!-- System Section -->
 			<div
 				class="mt-8"
@@ -799,6 +800,8 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						<div class="mt-1 text-lg text-stone-900 dark:text-stone-100">total: { systemStats.Memory }</div>
 						<div class="text-xs text-stone-500 dark:text-stone-400">pyramid: { systemStats.MemoryProcess }</div>
 					</div>
+				</div>
+				<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
 					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
 						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">server</div>
 						<div class="mt-1 text-stone-900 dark:text-stone-400">domain: { global.Settings.Domain }</div>
@@ -807,6 +810,11 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						if global.S.Port == "443" {
 							<div class="text-sm text-stone-600 dark:text-stone-400">managing TLS certificates</div>
 						}
+					</div>
+					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
+						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">relay</div>
+						<div class="mt-1 text-lg text-stone-900 dark:text-stone-100">clients: { relayClients }</div>
+						<div class="text-xs text-stone-500 dark:text-stone-400">listeners: { relayListeners }</div>
 					</div>
 					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
 						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">data usage</div>

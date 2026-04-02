@@ -39,6 +39,12 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		}
 	}
 
+	if validator != nil {
+		if err := validator.ValidateEvent(event); err != nil {
+			return true, "schema validation failed: " + err.Error()
+		}
+	}
+
 	// if a member has referenced a list on his paywall settings we'll accept that
 	if global.Settings.Paywall.Enabled {
 		if event.Kind.IsReplaceable() || event.Kind.IsAddressable() {
