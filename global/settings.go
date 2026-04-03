@@ -302,20 +302,8 @@ func loadUserSettings() error {
 			Settings.RelayIcon = "https://cdn.britannica.com/06/122506-050-C8E03A8A/Pyramid-of-Khafre-Giza-Egypt.jpg"
 			Settings.RelayInternalSecretKey = nostr.Generate()
 
-			if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
-				csv, _ := json.Marshal(Settings.AllowedKindsLegacy)
-				Settings.AllowedKindsSpec = string(csv)[0 : len(csv)-1]
-				Settings.AllowedKindsLegacy = nil
-			}
-
-			if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
-				return err
-			} else {
-				KindIsAllowed = kindIsAllowed
-			}
-
 			if err := SaveUserSettings(); err != nil {
-				return fmt.Errorf("failed to save settings: %w", err)
+				return fmt.Errorf("failed to save initial settings: %w", err)
 			}
 
 			return nil
@@ -328,8 +316,20 @@ func loadUserSettings() error {
 		return err
 	}
 
-	// temporary: replace {url} in settings
-	Settings.BrowseURI = strings.ReplaceAll(Settings.BrowseURI, "__URL__", "{url}")
+	if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
+		csv, _ := json.Marshal(Settings.AllowedKindsLegacy)
+		Settings.AllowedKindsSpec = string(csv)[1 : len(csv)-1]
+		Settings.AllowedKindsLegacy = nil
+		if err := SaveUserSettings(); err != nil {
+			return fmt.Errorf("failed to save settings after migrating allowed_kinds: %w", err)
+		}
+	}
+
+	if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
+		return err
+	} else {
+		KindIsAllowed = kindIsAllowed
+	}
 
 	return nil
 }
