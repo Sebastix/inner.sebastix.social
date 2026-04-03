@@ -363,7 +363,10 @@ func main() {
 
 		pk := global.Settings.RelayInternalSecretKey.Public()
 		info.Self = &pk
-		info.PubKey = &pk
+		for root := range pyramid.GetChildren(pk) {
+			info.PubKey = &root
+			break
+		}
 
 		info.Name = global.Settings.RelayName
 		info.Description = global.Settings.RelayDescription
