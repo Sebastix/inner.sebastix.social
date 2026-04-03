@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"iter"
 	"slices"
+	"strconv"
 	"unsafe"
 
 	"fiatjaf.com/nostr"
@@ -116,23 +119,20 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 	case 28934:
 		// check join request
 		claim := event.Tags.Find("claim")
-		if claim == nil {
+		if claim == nil || len(claim) < 2 {
 			return true, "restricted: missing claim tag"
 		}
 
-		// rebuild and check the authorization for this invite code
-		if len(claim[1]) != 64+128 {
-			return true, "restricted: invalid invite code size"
-		}
-		parent, err := nostr.PubKeyFromHex(claim[1][0:64])
+		invite, err := fetchInviteByClaim(claim[1])
 		if err != nil {
-			return true, "restricted: invalid invite code part 1"
+			return true, err.Error()
 		}
-		authorization := virtualInviteValidationEvent(parent)
-		if _, err := hex.Decode(authorization.Sig[:], []byte(claim[1][64:64+128])); err != nil {
-			return true, "restricted: invalid invite code part 2"
+		parentTag := invite.Tags.Find("p")
+		if parentTag == nil || len(parentTag) < 2 {
+			return true, "restricted: invalid invite code"
 		}
-		if !authorization.VerifySignature() {
+		parent, err := nostr.PubKeyFromHex(parentTag[1])
+		if err != nil {
 			return true, "restricted: invalid invite code"
 		}
 
@@ -219,23 +219,31 @@ func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 		if idx := slices.Index(filter.Kinds, 28935); idx != -1 {
 			if authed, ok := khatru.GetAuthed(ctx); ok && pyramid.CanInviteMore(authed) {
 				// generate invite codes for members if authenticated
-				vivevt := virtualInviteValidationEvent(authed)
-				vivevt.Sign(global.Settings.RelayInternalSecretKey)
-				inviteCode := make([]byte, 64+128)
-				hex.Encode(inviteCode[0:64], authed[:])
-				hex.Encode(inviteCode[64:64+128], vivevt.Sig[:])
+				inviteCodeBytes := make([]byte, 16)
+				if _, err := rand.Read(inviteCodeBytes); err != nil {
+					log.Error().Err(err).Msg("failed to generate invite code")
+					return
+				}
+				inviteCode := hex.EncodeToString(inviteCodeBytes)
+				expiration := nostr.Now() + 60*60*24*3
 
-				// generate the event containing the 192-letter invite code
+				// generate the event containing the invite code
 				evt := nostr.Event{
 					Kind:      28935,
 					PubKey:    global.Settings.RelayInternalSecretKey.Public(),
 					CreatedAt: nostr.Now(),
 					Tags: nostr.Tags{
 						{"-"},
-						{"claim", string(inviteCode)},
+						{"claim", inviteCode},
+						{"p", authed.Hex()},
+						{"expiration", strconv.FormatInt(int64(expiration), 10)},
 					},
 				}
 				evt.Sign(global.Settings.RelayInternalSecretKey)
+				if err := global.IL.Invites.SaveEvent(evt); err != nil {
+					log.Error().Err(err).Msg("failed to store invite code")
+					return
+				}
 				if !yield(evt) {
 					return
 				}
@@ -338,12 +346,34 @@ func preventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Eve
 
 func processJoinRequest(ctx context.Context, event nostr.Event) {
 	// here we know the event is already validated
-	parent := nostr.MustPubKeyFromHex(event.Tags.Find("claim")[1][0:64])
+	claim := event.Tags.Find("claim")
+	if claim == nil || len(claim) < 2 {
+		log.Warn().Stringer("event", event).Msg("missing claim tag in join request")
+		return
+	}
+	invite, err := fetchInviteByClaim(claim[1])
+	if err != nil {
+		log.Warn().Err(err).Stringer("event", event).Msg("invite not found when processing join request")
+		return
+	}
+	parentTag := invite.Tags.Find("p")
+	if parentTag == nil || len(parentTag) < 2 {
+		log.Warn().Stringer("event", event).Msg("invite missing parent tag")
+		return
+	}
+	parent, err := nostr.PubKeyFromHex(parentTag[1])
+	if err != nil {
+		log.Warn().Err(err).Stringer("event", event).Msg("invalid parent pubkey in invite")
+		return
+	}
 
 	if err := pyramid.AddAction(pyramid.ActionInvite, parent, event.PubKey); err != nil {
 		log.Warn().Err(err).Str("parent", parent.Hex()).Str("child", event.PubKey.Hex()).Stringer("event", event).
 			Msg("failed to add from join request")
 		return
+	}
+	if err := global.IL.Invites.DeleteEvent(invite.ID); err != nil {
+		log.Warn().Err(err).Stringer("event", event).Msg("failed to delete invite after acceptance")
 	}
 
 	publishMembershipChange(event.PubKey, true)
@@ -418,16 +448,48 @@ func publishMembershipChange(pubkey nostr.PubKey, added bool) {
 	}
 }
 
-func virtualInviteValidationEvent(inviter nostr.PubKey) nostr.Event {
-	vivevt := nostr.Event{
-		CreatedAt: 0,
-		Kind:      28937,
-		Content:   "",
-		Tags:      nostr.Tags{{"P", inviter.Hex()}},
-		PubKey:    global.Settings.RelayInternalSecretKey.Public(),
+func fetchInviteByClaim(claim string) (nostr.Event, error) {
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{28935},
+		Tags:  nostr.TagMap{"claim": []string{claim}},
 	}
-	vivevt.ID = vivevt.GetID()
-	return vivevt
+	res := slices.Collect(global.IL.Invites.QueryEvents(filter, 1))
+	if len(res) == 0 {
+		return nostr.Event{}, errors.New("restricted: invalid invite code")
+	}
+	invite := res[0]
+	expirationTag := invite.Tags.Find("expiration")
+	if expirationTag != nil && len(expirationTag) > 1 {
+		if exp, err := strconv.ParseInt(expirationTag[1], 10, 64); err == nil {
+			if nostr.Timestamp(exp) <= nostr.Now() {
+				_ = global.IL.Invites.DeleteEvent(invite.ID)
+				return nostr.Event{}, errors.New("restricted: invite code expired")
+			}
+		}
+	}
+	return invite, nil
+}
+
+func cleanupExpiredInvites() (int, error) {
+	deleted := 0
+	now := nostr.Now()
+	for evt := range global.IL.Invites.QueryEvents(nostr.Filter{}, 0) {
+		expirationTag := evt.Tags.Find("expiration")
+		if expirationTag == nil || len(expirationTag) < 2 {
+			continue
+		}
+		exp, err := strconv.ParseInt(expirationTag[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		if nostr.Timestamp(exp) <= now {
+			if err := global.IL.Invites.DeleteEvent(evt.ID); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func deleteFromMain(id nostr.ID) error {

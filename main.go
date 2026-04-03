@@ -85,6 +85,19 @@ func main() {
 		}
 	}()
 
+	// cleanup expired invite codes
+	go func() {
+		for {
+			deleted, err := cleanupExpiredInvites()
+			if err != nil {
+				log.Error().Err(err).Msg("failed to cleanup expired invites")
+			} else if deleted > 0 {
+				log.Info().Int("deleted", deleted).Msg("cleaned up expired invites")
+			}
+			time.Sleep(time.Hour * 6)
+		}
+	}()
+
 	pyramid.AbsoluteKey = global.Settings.RelayInternalSecretKey.Public()
 
 	if err := pyramid.LoadManagement(); err != nil {

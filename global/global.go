@@ -83,6 +83,11 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'internal': %w", err)
 	}
 
+	IL.Invites, err = MMMM.EnsureLayer("invites")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'invites': %w", err)
+	}
+
 	IL.Personal, err = MMMM.EnsureLayer("personal")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'personal': %w", err)
@@ -155,6 +160,7 @@ var IL struct {
 	// specific
 	Favorites *mmm.IndexingLayer
 	Internal  *mmm.IndexingLayer
+	Invites   *mmm.IndexingLayer
 	Personal  *mmm.IndexingLayer
 	Groups    *mmm.IndexingLayer
 	Inbox     *mmm.IndexingLayer
