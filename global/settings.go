@@ -59,8 +59,11 @@ type UserSettings struct {
 
 	RelayInternalSecretKey nostr.SecretKey `json:"relay_internal_secret_key"`
 
-	BlockedIPs   []string     `json:"blocked_ips"`
-	AllowedKinds []nostr.Kind `json:"allowed_kinds,omitempty"`
+	BlockedIPs       []string `json:"blocked_ips"`
+	AllowedKindsSpec string   `json:"allowed_kinds_spec,omitempty"`
+
+	// Deprecated: remove this after people have migrated
+	AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
 
 	// per-relay
 	Internal struct {
@@ -299,6 +302,18 @@ func loadUserSettings() error {
 			Settings.RelayIcon = "https://cdn.britannica.com/06/122506-050-C8E03A8A/Pyramid-of-Khafre-Giza-Egypt.jpg"
 			Settings.RelayInternalSecretKey = nostr.Generate()
 
+			if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
+				csv, _ := json.Marshal(Settings.AllowedKindsLegacy)
+				Settings.AllowedKindsSpec = string(csv)[0 : len(csv)-1]
+				Settings.AllowedKindsLegacy = nil
+			}
+
+			if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
+				return err
+			} else {
+				KindIsAllowed = kindIsAllowed
+			}
+
 			if err := SaveUserSettings(); err != nil {
 				return fmt.Errorf("failed to save settings: %w", err)
 			}
@@ -347,9 +362,4 @@ var SupportedKindsDefault = []nostr.Kind{
 	31924, 31925, 39701,
 }
 
-func GetAllowedKinds() []nostr.Kind {
-	if len(Settings.AllowedKinds) > 0 {
-		return Settings.AllowedKinds
-	}
-	return SupportedKindsDefault
-}
+var KindIsAllowed func(nostr.Kind) bool

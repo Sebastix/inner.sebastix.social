@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
@@ -159,10 +161,6 @@ func changeRelayIconHandler(ctx context.Context, icon string) error {
 	return global.SaveUserSettings()
 }
 
-func listAllowedKindsHandler(ctx context.Context) ([]nostr.Kind, error) {
-	return global.GetAllowedKinds(), nil
-}
-
 func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	caller, ok := khatru.GetAuthed(ctx)
 	if !ok {
@@ -173,22 +171,39 @@ func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	}
 	log.Info().Str("caller", caller.Hex()).Uint16("kind", uint16(kind)).Msg("management allowkind called")
 
-	if len(global.Settings.AllowedKinds) == 0 {
-		global.Settings.AllowedKinds = make([]nostr.Kind, len(global.SupportedKindsDefault))
-		copy(global.Settings.AllowedKinds, global.SupportedKindsDefault)
+	if global.Settings.AllowedKindsSpec == "all" {
+		return fmt.Errorf("all kinds are supported already")
 	}
 
-	// check if kind is already in the list, otherwise add it in the correct position
-	if idx, has := slices.BinarySearch(global.Settings.AllowedKinds, kind); !has {
-		next := make([]nostr.Kind, len(global.Settings.AllowedKinds)+1)
-		copy(next[0:idx], global.Settings.AllowedKinds[0:idx])
-		next[idx] = kind
-		copy(next[idx+1:], global.Settings.AllowedKinds[idx:])
-		global.Settings.AllowedKinds = next
-		return global.SaveUserSettings()
+	list, err := global.ParseKinds(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	if slices.Contains(list, kind) {
+		return nil
+	}
+
+	if strings.Contains(global.Settings.AllowedKindsSpec, "+") || strings.Contains(global.Settings.AllowedKindsSpec, "-") || strings.TrimSpace(global.Settings.AllowedKindsSpec) == "" {
+		// is delta
+		global.Settings.AllowedKindsSpec += ",+" + strconv.Itoa(int(kind))
+	} else {
+		// is specific
+		global.Settings.AllowedKindsSpec += "," + strconv.Itoa(int(kind))
+	}
+
+	// rebuild
+	global.KindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
+
+	return global.SaveUserSettings()
+}
+
+func listAllowedKindsHandler(ctx context.Context) ([]nostr.Kind, error) {
+	if global.Settings.AllowedKindsSpec == "all" {
+		return []nostr.Kind{}, nil
+	} else {
+		return global.ParseKinds(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
+	}
 }
 
 func disallowKindHandler(ctx context.Context, kind nostr.Kind) error {
@@ -201,24 +216,35 @@ func disallowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	}
 	log.Info().Str("caller", caller.Hex()).Uint16("kind", uint16(kind)).Msg("management disallowkind called")
 
-	if len(global.Settings.AllowedKinds) == 0 {
-		global.Settings.AllowedKinds = make([]nostr.Kind, len(global.SupportedKindsDefault))
-		copy(global.Settings.AllowedKinds, global.SupportedKindsDefault)
+	if global.Settings.AllowedKindsSpec == "all" {
+		return fmt.Errorf("all kinds are supported, must change that in the settings")
 	}
 
-	// find and remove the kind from the list
-	idx := slices.Index(global.Settings.AllowedKinds, kind)
-	if idx != -1 {
-		global.Settings.AllowedKinds = append(
-			global.Settings.AllowedKinds[:idx],
-			global.Settings.AllowedKinds[idx+1:]...,
-		)
+	list, err := global.ParseKinds(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
+	if err != nil {
+		return err
 	}
 
-	// if the list is now empty, remove it from settings
-	if len(global.Settings.AllowedKinds) == 0 {
-		global.Settings.AllowedKinds = nil
+	if !slices.Contains(list, kind) {
+		return nil
 	}
+
+	if strings.Contains(global.Settings.AllowedKindsSpec, "+") || strings.Contains(global.Settings.AllowedKindsSpec, "-") || strings.TrimSpace(global.Settings.AllowedKindsSpec) == "" {
+		// is delta
+		global.Settings.AllowedKindsSpec += ",-" + strconv.Itoa(int(kind))
+	} else {
+		// is specific
+		listStr := make([]string, 0, len(list))
+		for _, ek := range list {
+			if ek != kind {
+				listStr = append(listStr, strconv.Itoa(int(ek)))
+			}
+		}
+		global.Settings.AllowedKindsSpec = strings.Join(listStr, ",")
+	}
+
+	// rebuild this
+	global.KindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
 
 	return global.SaveUserSettings()
 }

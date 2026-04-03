@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
 	"iter"
 	"slices"
 	"unsafe"
@@ -59,11 +58,8 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		// allow 1163 if paywall is enabled
 	} else if event.Kind == 28934 || event.Kind == 28936 {
 		// these are always allowed
-	} else {
-		kinds := global.GetAllowedKinds()
-		if _, allowed := slices.BinarySearch(kinds, nostr.Kind(event.Kind)); !allowed {
-			return true, fmt.Sprintf("event kind %d not allowed", event.Kind)
-		}
+	} else if !global.KindIsAllowed(event.Kind) {
+		return true, "blocked: kind unallowed"
 	}
 
 	// handle special kinds

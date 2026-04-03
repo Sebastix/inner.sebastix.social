@@ -85,8 +85,11 @@ func setupEnabled() {
 		policies.PreventLargeContent(global.Settings.MaxEventSize),
 		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
 		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
-		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
+			if !global.KindIsAllowed(evt.Kind) {
+				return true, "blocked: kind unallowed"
+			}
+
 			authedPublicKeys := khatru.GetAllAuthed(ctx)
 			if len(authedPublicKeys) == 0 {
 				return true, "auth-required: must be a relay member"

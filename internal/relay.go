@@ -98,9 +98,12 @@ func setupEnabled() {
 		policies.PreventLargeContent(global.Settings.MaxEventSize),
 		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
 		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
-		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		policies.OnlyAllowNIP70ProtectedEvents,
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
+			if !global.KindIsAllowed(evt.Kind) {
+				return true, "blocked: kind unallowed"
+			}
+
 			if pyramid.IsMember(evt.PubKey) {
 				return false, ""
 			}

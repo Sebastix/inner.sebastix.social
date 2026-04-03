@@ -422,22 +422,15 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				//
 				// allowed kinds settings
-			case "allowed_kinds":
-				kinds := make([]nostr.Kind, 0, len(v[0])*6)
-				// split by comma and parse each kind
-				for _, s := range strings.Split(v[0], ",") {
-					if kind, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16); err == nil {
-						kinds = append(kinds, nostr.Kind(kind))
-					}
+			case "allowed_kinds_spec":
+				kindIsAllowed, err := global.BuildKindIsAllowedFunction(v[0], global.SupportedKindsDefault)
+				if err != nil {
+					http.Error(w, "invalid allowed_kinds: "+err.Error(), 400)
+					return
 				}
-				// if no kinds are entered, set to nil to use the default list
 
-				if len(kinds) == 0 {
-					global.Settings.AllowedKinds = nil
-				} else {
-					global.Settings.AllowedKinds = kinds
-					slices.Sort(global.Settings.AllowedKinds)
-				}
+				global.Settings.AllowedKindsSpec = v[0]
+				global.KindIsAllowed = kindIsAllowed
 				//
 				// ftp settings
 			case "ftp_enabled":
