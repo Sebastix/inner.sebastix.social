@@ -152,7 +152,7 @@ templ inboxPage(loggedUser nostr.PubKey) {
 							x-data={ `{
 								hellthreadLimit: ` + fmt.Sprint(global.Settings.Inbox.HellthreadLimit) + `,
 								minDMPoW: ` + fmt.Sprint(global.Settings.Inbox.MinDMPoW) + `,
-								showInboxAllowedKinds: ` + fmt.Sprint(len(global.Settings.Inbox.AllowedKinds) > 0) + `,
+								showInboxAllowedKinds: ` + fmt.Sprint(strings.TrimSpace(global.Settings.Inbox.AllowedKindsSpec) != "") + `,
 								blocked: [` + strings.Join(quoted, ",") + `],
 								saved: false,
 								async saveSettings() {
@@ -245,15 +245,17 @@ templ inboxPage(loggedUser nostr.PubKey) {
 								<div class="space-y-1">
 									<textarea
 										name="inbox_allowed_kinds"
-										placeholder="enter kind numbers separated by commas (e.g., 1, 6, 7)"
+										placeholder="examples:
+1, 6, 7, 11, 1111, 1244
+all
+-6, -7, +30818"
 										class="w-full px-3 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100 h-24 font-mono text-sm"
 										@blur="saveSettings()"
 									>
-										{{ j := global.JSONString(getAllowedKinds()) }}
-										{ j[1:len(j)-1] }
+										{ global.Settings.Inbox.AllowedKindsSpec }
 									</textarea>
 									<p class="text-xs text-stone-500 dark:text-stone-400">
-										enter kind numbers separated by commas. leave empty to use the default list.
+										comma-separated numbers set the full list, "all" allows all kinds, and "+/-" entries add or remove from the default list.
 									</p>
 								</div>
 							</div>

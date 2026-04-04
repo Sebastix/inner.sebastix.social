@@ -74,8 +74,6 @@ func main() {
 
 	// stuff we have to initialize
 	fillInRelevantUsersMapping()
-	slices.Sort(global.SupportedKindsDefault)
-	slices.Sort(global.Settings.Inbox.AllowedKinds)
 
 	// start periodic version checking
 	go func() {

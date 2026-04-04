@@ -81,10 +81,14 @@ type UserSettings struct {
 	Inbox struct {
 		RelayMetadata
 		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
-		AllowedKinds        []nostr.Kind   `json:"allowed_kinds,omitempty"`
-		HellthreadLimit     int            `json:"hellthread_limit"`
-		MinDMPoW            int            `json:"min_dm_pow"`
-		RequireAuthForDM    string         `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
+		AllowedKindsSpec    string         `json:"allowed_kinds_spec,omitempty"`
+
+		// Deprecated: remove this after people have migrated
+		AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
+
+		HellthreadLimit  int    `json:"hellthread_limit"`
+		MinDMPoW         int    `json:"min_dm_pow"`
+		RequireAuthForDM string `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
 	} `json:"inbox"`
 
 	Groups struct {
@@ -319,11 +323,20 @@ func loadUserSettings() error {
 	if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
 		csv, _ := json.Marshal(Settings.AllowedKindsLegacy)
 		Settings.AllowedKindsSpec = string(csv)[1 : len(csv)-1]
-		Settings.AllowedKindsLegacy = nil
 		if err := SaveUserSettings(); err != nil {
 			return fmt.Errorf("failed to save settings after migrating allowed_kinds: %w", err)
 		}
 	}
+	Settings.AllowedKindsLegacy = nil
+
+	if Settings.Inbox.AllowedKindsSpec == "" && len(Settings.Inbox.AllowedKindsLegacy) > 0 {
+		csv, _ := json.Marshal(Settings.Inbox.AllowedKindsLegacy)
+		Settings.Inbox.AllowedKindsSpec = string(csv)[1 : len(csv)-1]
+		if err := SaveUserSettings(); err != nil {
+			return fmt.Errorf("failed to save settings after migrating inbox allowed_kinds: %w", err)
+		}
+	}
+	Settings.Inbox.AllowedKindsLegacy = nil
 
 	if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
 		return err
