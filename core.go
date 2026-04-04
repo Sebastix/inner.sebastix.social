@@ -473,7 +473,7 @@ func fetchInviteByClaim(claim string) (nostr.Event, error) {
 func cleanupExpiredInvites() (int, error) {
 	deleted := 0
 	now := nostr.Now()
-	for evt := range global.IL.Invites.QueryEvents(nostr.Filter{}, 0) {
+	for evt := range global.IL.Invites.QueryEvents(nostr.Filter{}, 500) {
 		expirationTag := evt.Tags.Find("expiration")
 		if expirationTag == nil || len(expirationTag) < 2 {
 			continue
