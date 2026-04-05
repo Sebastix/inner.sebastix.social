@@ -2,6 +2,10 @@
 
 **pyramid** serves as a wondrous furnace of communityzenship for your Nostr experience, enabling users to build and nurture vibrant communities through a hierarchical relay system. With powerful subrelay features, extensive optional configurations, and easy theming options, **pyramid** makes it effortless to create and manage personalized Nostr environments tailored to your personal or community's needs.
 
+## introduction
+
+if you have no idea of how to use this, try reading [this guide](https://spatianostra.com/the-pyramid-community-relay/) and you'll be like ![](https://nostr.media/829bfab666cd2176312ae7548965e3334d08d44fbd4100c0a97bd829d70d114a.png)
+
 ## easy install
 
 type this in a blank server you just rented:
