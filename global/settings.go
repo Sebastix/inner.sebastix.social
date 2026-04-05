@@ -35,15 +35,16 @@ type UserSettings struct {
 	} `json:"theme"`
 
 	// general
-	BrowseURI               string `json:"browse_uri"`
-	LinkURL                 string `json:"link_url"`
-	MaxInvitesPerPerson     int    `json:"max_invites_per_person,omitempty"`
-	MaxInvitesAtEachLevel   []int  `json:"max_invites_at_each_level,omitempty"`
-	MaxEventSize            int    `json:"max_event_size"`
-	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
-	AcceptScheduledEvents   bool   `json:"accept_scheduled_events"`
-	ValidateSchema          bool   `json:"validate_schema"`
-	Search                  struct {
+	BrowseURI                string `json:"browse_uri"`
+	LinkURL                  string `json:"link_url"`
+	MaxInvitesPerPerson      int    `json:"max_invites_per_person,omitempty"`
+	MaxInvitesAtEachLevel    []int  `json:"max_invites_at_each_level,omitempty"`
+	MaxEventSize             int    `json:"max_event_size"`
+	RequireCurrentTimestamp  bool   `json:"require_current_timestamp"`
+	AcceptScheduledEvents    bool   `json:"accept_scheduled_events"`
+	AllowEphemeralFromAnyone bool   `json:"allow_ephemeral_from_anyone"`
+	ValidateSchema           bool   `json:"validate_schema"`
+	Search                   struct {
 		Enable    bool     `json:"enable"`
 		Languages []string `json:"languages"`
 	} `json:"search"`
@@ -243,13 +244,14 @@ func getUserSettingsPath() string {
 func loadUserSettings() error {
 	// start it with the defaults
 	Settings = UserSettings{
-		BrowseURI:               "https://jumble.social/?r={url}",
-		LinkURL:                 "nostr:{code}",
-		MaxInvitesPerPerson:     4,
-		MaxEventSize:            10000,
-		RequireCurrentTimestamp: false,
-		BlockedIPs:              []string{},
-		AcceptScheduledEvents:   true,
+		BrowseURI:                "https://jumble.social/?r={url}",
+		LinkURL:                  "nostr:{code}",
+		MaxInvitesPerPerson:      4,
+		MaxEventSize:             10000,
+		RequireCurrentTimestamp:  false,
+		BlockedIPs:               []string{},
+		AcceptScheduledEvents:    true,
+		AllowEphemeralFromAnyone: true,
 	}
 	Settings.Search.Enable = false
 	Settings.Search.Languages = []string{"en"}

@@ -154,6 +154,8 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.RequireCurrentTimestamp = v[0] == "on"
 			case "accept_scheduled_events":
 				global.Settings.AcceptScheduledEvents = v[0] == "on"
+			case "allow_ephemeral_from_anyone":
+				global.Settings.AllowEphemeralFromAnyone = v[0] == "on"
 			case "validate_schema":
 				enabled := v[0] == "on"
 				if err := setSchemaValidator(enabled); err != nil {

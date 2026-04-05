@@ -154,8 +154,8 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		return false, "goodbye"
 	}
 
-	// for all other events we only accept stuff from members
-	if pyramid.IsMember(event.PubKey) {
+	// we accept stuff from non-members in this case
+	if global.Settings.AllowEphemeralFromAnyone && event.Kind.IsEphemeral() {
 		return false, ""
 	}
 
@@ -167,7 +167,12 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		}
 	}
 
-	return true, "not authorized"
+	// require being a member
+	if pyramid.IsMember(event.PubKey) {
+		return false, ""
+	} else {
+		return true, "not authorized"
+	}
 }
 
 func rejectInviteRequestsNonAuthed(ctx context.Context, filter nostr.Filter) (bool, string) {
