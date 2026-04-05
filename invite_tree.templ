@@ -8,7 +8,11 @@ import (
 	"github.com/fiatjaf/pyramid/pyramid"
 )
 
-templ inviteTreePage(loggedUser nostr.PubKey, nip05Names map[nostr.PubKey]string) {
+templ inviteTreePage(
+	loggedUser nostr.PubKey,
+	nip05Names map[nostr.PubKey]string,
+	onlinePubkeys map[nostr.PubKey]struct{},
+) {
 	@layout.Layout(loggedUser, "invite-tree") {
 		<div
 			class="max-w-3xl mx-auto"
@@ -123,8 +127,13 @@ templ inviteTreePage(loggedUser nostr.PubKey, nip05Names map[nostr.PubKey]string
 					></button>
 				</form>
 			}
+			if len(onlinePubkeys) > 1 {
+				<div class="mb-4 text-sm font-medium themed:text-[var(--text-color)] light:text-gray-700 dark:text-gray-300">
+					{ len(onlinePubkeys) } online
+				</div>
+			}
 			<div class="themed:text-[var(--text-color)] light:text-gray-700 dark:text-gray-300">
-				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false, nip05Names)
+				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false, nip05Names, onlinePubkeys)
 			</div>
 		</div>
 	}
@@ -135,6 +144,7 @@ templ inviteTreeComponent(
 	loggedUser nostr.PubKey,
 	isDescendantOfLoggedUser bool,
 	nip05Names map[nostr.PubKey]string,
+	onlinePubkeys map[nostr.PubKey]struct{},
 ) {
 	<ul>
 		for pubkey, member := range pyramid.GetChildren(curr) {
@@ -152,6 +162,11 @@ templ inviteTreeComponent(
 								class="cursor-default ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium themed:bg-[var(--accent-color)] themed:text-white light:bg-blue-50 light:text-blue-700 light:ring-1 light:ring-inset light:ring-blue-600/20 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-500/20"
 							>
 								root
+							</span>
+						}
+						if _, isOnline := onlinePubkeys[pubkey]; isOnline {
+							<span class="ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium themed:bg-[var(--text-color)] themed:text-white light:bg-gray-700 light:text-gray-300 dark:bg-gray-300 dark:text-gray-700">
+								online
 							</span>
 						}
 					</span>
@@ -204,7 +219,7 @@ templ inviteTreeComponent(
 						</div>
 					}
 				</div>
-				@inviteTreeComponent(pubkey, loggedUser, isDescendantOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr), nip05Names)
+				@inviteTreeComponent(pubkey, loggedUser, isDescendantOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr), nip05Names, onlinePubkeys)
 			</li>
 		}
 	</ul>

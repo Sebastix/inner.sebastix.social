@@ -45,7 +45,15 @@ func inviteTreeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	inviteTreePage(loggedUser, nip05Names).Render(r.Context(), w)
+	onlinePubkeys := map[nostr.PubKey]struct{}{}
+	for evt := range global.IL.Main.QueryEvents(nostr.Filter{
+		Since: nostr.Now() - 60*10,
+		Kinds: []nostr.Kind{1},
+	}, 1000) {
+		onlinePubkeys[evt.PubKey] = struct{}{}
+	}
+
+	inviteTreePage(loggedUser, nip05Names, onlinePubkeys).Render(r.Context(), w)
 }
 
 func actionHandler(w http.ResponseWriter, r *http.Request) {
