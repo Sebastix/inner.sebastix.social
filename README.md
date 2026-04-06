@@ -4,7 +4,7 @@
 
 ## introduction
 
-if you have no idea of how to use this, try reading [this guide](https://spatianostra.com/the-pyramid-community-relay/) and you'll be like ![](https://nostr.media/829bfab666cd2176312ae7548965e3334d08d44fbd4100c0a97bd829d70d114a.png)
+if you have no idea of what pyramid is about, try reading [this guide](https://spatianostra.com/the-pyramid-community-relay/) and soon you'll be like ![](https://nostr.media/829bfab666cd2176312ae7548965e3334d08d44fbd4100c0a97bd829d70d114a.png)
 
 ## easy install
 
