@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"context"
 	"net"
 	"net/http"
 
@@ -16,8 +17,9 @@ var (
 	L       = global.Log.With().Str("module", "stream").Logger()
 	Handler = &MuxHandler{}
 
-	hlsServer  *hls.Server
-	rtmpStream *rtmp.RtmpStream
+	hlsServer     *hls.Server
+	rtmpStream    *rtmp.RtmpStream
+	rtmpCtxCancel context.CancelFunc
 )
 
 func Init(relay *khatru.Relay) {
@@ -34,6 +36,9 @@ func setupDisabled() {
 	Handler.mux = http.NewServeMux()
 	Handler.mux.HandleFunc("POST /stream/enable", enableHandler)
 	Handler.mux.HandleFunc("/stream/", pageHandler)
+	if rtmpCtxCancel != nil {
+		rtmpCtxCancel()
+	}
 	L.Debug().Msg("stream service disabled")
 }
 
@@ -42,9 +47,11 @@ func setupEnabled() {
 	hlsServer.BasePath = "/stream"
 	rtmpStream = rtmp.NewRtmpStream()
 
-	if err := startRtmp(rtmpStream, hlsServer); err != nil {
+	rtmpCtx, cancel := context.WithCancel(context.Background())
+	if err := startRtmp(rtmpCtx, rtmpStream, hlsServer); err != nil {
 		L.Warn().Err(err).Msg("failed to start rtmp")
 	}
+	rtmpCtxCancel = cancel
 
 	Handler.mux = http.NewServeMux()
 	Handler.mux.HandleFunc("POST /stream/disable", disableHandler)
@@ -54,9 +61,9 @@ func setupEnabled() {
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
-	loggedUser, ok := global.GetLoggedUser(r)
-	if !ok || !pyramid.IsRoot(loggedUser) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	loggedUser, _ := global.GetLoggedUser(r)
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
 
@@ -67,30 +74,30 @@ func enableHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := global.SaveUserSettings(); err != nil {
 		L.Error().Err(err).Msg("failed to save settings")
-		http.Error(w, "failed to save settings", http.StatusInternalServerError)
+		http.Error(w, "failed to save settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	L.Info().Msg("stream service enabled by admin")
-	http.Redirect(w, r, "/stream/", http.StatusSeeOther)
+	setupEnabled()
+	http.Redirect(w, r, "/stream/", http.StatusFound)
 }
 
 func disableHandler(w http.ResponseWriter, r *http.Request) {
-	loggedUser, ok := global.GetLoggedUser(r)
-	if !ok || !pyramid.IsRoot(loggedUser) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	loggedUser, _ := global.GetLoggedUser(r)
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
 
 	global.Settings.Stream.Enabled = false
 	if err := global.SaveUserSettings(); err != nil {
 		L.Error().Err(err).Msg("failed to save settings")
-		http.Error(w, "failed to save settings", http.StatusInternalServerError)
+		http.Error(w, "failed to save settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	L.Info().Msg("stream service disabled by admin")
-	http.Redirect(w, r, "/stream/", http.StatusSeeOther)
+	setupDisabled()
+	http.Redirect(w, r, "/stream/", http.StatusFound)
 }
 
 type MuxHandler struct {
@@ -101,7 +108,7 @@ func (mh *MuxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mh.mux.ServeHTTP(w, r)
 }
 
-func startRtmp(stream *rtmp.RtmpStream, hlsServer *hls.Server) error {
+func startRtmp(ctx context.Context, stream *rtmp.RtmpStream, hlsServer *hls.Server) error {
 	var rtmpListen net.Listener
 	rtmpListen, err := net.Listen("tcp", "0.0.0.0:1935")
 	if err != nil {
@@ -109,6 +116,11 @@ func startRtmp(stream *rtmp.RtmpStream, hlsServer *hls.Server) error {
 	}
 
 	rtmpServer := rtmp.NewRtmpServer(stream, hlsServer)
+
+	go func() {
+		<-ctx.Done()
+		rtmpListen.Close()
+	}()
 
 	go func() {
 		defer func() {
