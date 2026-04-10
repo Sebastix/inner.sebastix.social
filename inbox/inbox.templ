@@ -152,6 +152,7 @@ templ inboxPage(loggedUser nostr.PubKey) {
 							x-data={ `{
 								hellthreadLimit: ` + fmt.Sprint(global.Settings.Inbox.HellthreadLimit) + `,
 								minDMPoW: ` + fmt.Sprint(global.Settings.Inbox.MinDMPoW) + `,
+								showInboxAllowedKinds: ` + fmt.Sprint(strings.TrimSpace(global.Settings.Inbox.AllowedKindsSpec) != "") + `,
 								blocked: [` + strings.Join(quoted, ",") + `],
 								saved: false,
 								async saveSettings() {
@@ -231,8 +232,35 @@ templ inboxPage(loggedUser nostr.PubKey) {
 									</div>
 								</div>
 							</div>
+							<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="inbox_allowed_kinds">allowed inbox kinds</label>
+							<button
+								type="button"
+								x-show="!showInboxAllowedKinds"
+								@mouseup="showInboxAllowedKinds = true"
+								class="cursor-pointer px-3 py-1 text-sm rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-600 dark:hover:bg-stone-500"
+							>
+								customize inbox event kinds
+							</button>
+							<div x-show="showInboxAllowedKinds" x-transition>
+								<div class="space-y-1">
+									<textarea
+										name="inbox_allowed_kinds"
+										placeholder="examples:
+1, 6, 7, 11, 1111, 1244
+all
+-6, -7, +30818"
+										class="w-full px-3 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100 h-24 font-mono text-sm"
+										@blur="saveSettings()"
+									>
+										{ global.Settings.Inbox.AllowedKindsSpec }
+									</textarea>
+									<p class="text-xs text-stone-500 dark:text-stone-400">
+										comma-separated numbers set the full list, "all" allows all kinds, and "+/-" entries add or remove from the default list.
+									</p>
+								</div>
+							</div>
 							<div>
-								<label class="block text-sm font-medium mb-2 dark:text-stone-300">specifically blocked pubkeys</label>
+								<label class="block text-sm font-medium mb-2 mt-4 dark:text-stone-300">specifically blocked pubkeys</label>
 								<div class="space-y-2 mb-4">
 									<template x-for="(pk, index) in blocked" :key="index">
 										<div class="flex items-center gap-2">

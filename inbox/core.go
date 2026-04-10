@@ -15,11 +15,16 @@ import (
 )
 
 var (
-	allowedKinds  = []nostr.Kind{9802, 1, 1111, 11, 1244, 1222, 30818, 20, 21, 22, 30023, 9735, 9321}
 	secretKinds   = []nostr.Kind{1059}
 	aggregatedWoT WotXorFilter
 	wotComputed   = false
+	kindIsAllowed func(nostr.Kind) bool
+	allowedKinds  []nostr.Kind
 )
+
+var supportedKindsDefault = []nostr.Kind{
+	1, 6, 7, 11, 20, 21, 22, 9321, 9735, 1111, 1222, 1244, 9802, 30023, 30818,
+}
 
 func rejectFilter(ctx context.Context, filter nostr.Filter) (bool, string) {
 	// check if filter includes secret kinds
@@ -194,7 +199,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	}
 
 	// here are normal mentions
-	if !slices.Contains(allowedKinds, evt.Kind) {
+	if kindIsAllowed != nil && !kindIsAllowed(evt.Kind) {
 		return true, "blocked: event kind not allowed"
 	}
 
@@ -260,4 +265,40 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	}
 
 	return false, ""
+}
+
+func getAllowedKinds() []nostr.Kind {
+	if allowedKinds != nil {
+		return allowedKinds
+	}
+	return nil
+}
+
+func UpdateAllowedKindsSpec(spec string) error {
+	kindIsAllowedFn, err := global.BuildKindIsAllowedFunction(spec, supportedKindsDefault)
+	if err != nil {
+		return err
+	}
+
+	global.Settings.Inbox.AllowedKindsSpec = spec
+	kindIsAllowed = kindIsAllowedFn
+
+	if spec == "all" {
+		allowedKinds = nil
+		return nil
+	}
+
+	allowedKinds, err = global.ParseKinds(spec, supportedKindsDefault)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func initAllowedKinds() {
+	if err := UpdateAllowedKindsSpec(global.Settings.Inbox.AllowedKindsSpec); err != nil {
+		log.Error().Err(err).Msg("invalid inbox allowed_kinds_spec, using defaults")
+		_ = UpdateAllowedKindsSpec("")
+	}
 }

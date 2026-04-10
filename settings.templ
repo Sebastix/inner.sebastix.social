@@ -243,13 +243,13 @@ templ settingsPage(loggedUser nostr.PubKey) {
 				action="/settings"
 				class="space-y-6 mt-8"
 				x-data={ `{
-					showAllowedKinds: `+ fmt.Sprint(len(global.Settings.AllowedKinds) > 0) +`,
 					nip05Enabled: ` + fmt.Sprint(global.Settings.NIP05.Enabled) + `,
 					maxInvitesPerPerson: ` + global.JSONString(global.Settings.GetMaxInvitesDisplay()) + `,
 					maxEventSize: ` + fmt.Sprint(global.Settings.MaxEventSize) + `,
 					requireCurrentTimestamp: ` + fmt.Sprint(global.Settings.RequireCurrentTimestamp) + `,
-					enableOTS: ` + fmt.Sprint(global.Settings.EnableOTS) + `,
 					acceptScheduledEvents: ` + fmt.Sprint(global.Settings.AcceptScheduledEvents) + `,
+					allowEphemeralFromAnyone: ` + fmt.Sprint(global.Settings.AllowEphemeralFromAnyone) + `,
+					validateSchema: ` + fmt.Sprint(global.Settings.ValidateSchema) + `,
 					browseUri: ` + global.JSONString(global.Settings.BrowseURI) + `,
 					linkUrl: ` + global.JSONString(global.Settings.LinkURL) + `,
 					saved: false,
@@ -294,6 +294,34 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						</label>
 						<input type="hidden" name="accept_scheduled_events" value="off"/>
 					</div>
+					<div class="flex items-center">
+						<input
+							type="checkbox"
+							name="validate_schema"
+							id="validate_schema"
+							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
+							x-model="validateSchema"
+							@change="saveSettings()"
+						/>
+						<label for="validate_schema" class="ml-2 text-sm font-medium dark:text-stone-300">
+							validate main relay events against schema
+						</label>
+						<input type="hidden" name="validate_schema" value="off"/>
+					</div>
+					<div class="flex items-center">
+						<input
+							type="checkbox"
+							name="allow_ephemeral_from_anyone"
+							id="allow_ephemeral_from_anyone"
+							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
+							x-model="allowEphemeralFromAnyone"
+							@change="saveSettings()"
+						/>
+						<label for="allow_ephemeral_from_anyone" class="ml-2 text-sm font-medium dark:text-stone-300">
+							allow ephemeral events from non-members
+						</label>
+						<input type="hidden" name="allow_ephemeral_from_anyone" value="off"/>
+					</div>
 					<div>
 						<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="max_invites_per_person">max invites per person</label>
 						<input
@@ -324,20 +352,6 @@ templ settingsPage(loggedUser nostr.PubKey) {
 					<div class="flex items-center">
 						<input
 							type="checkbox"
-							name="enable_ots"
-							id="enable_ots"
-							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
-							x-model="enableOTS"
-							@change="saveSettings()"
-						/>
-						<label for="enable_ots" class="ml-2 text-sm dark:text-stone-300">
-							automatically NIP-03 <a class="underline underline-offset-4 hover:font-medium" href="https://opentimestamps.org/" target="_blank">OpenTimestamp</a> every event published here (only certain kinds eligible)
-						</label>
-						<input type="hidden" name="enable_ots" value="off"/>
-					</div>
-					<div class="flex items-center">
-						<input
-							type="checkbox"
 							name="nip05_enabled"
 							id="nip05_enabled"
 							class="w-4 h-6 rounded border-stone-300 dark:border-stone-600"
@@ -349,34 +363,20 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						</label>
 						<input type="hidden" name="nip05_enabled" value="off"/>
 					</div>
-					{{ actualAllowedKinds := global.Settings.AllowedKinds }}
-					if len(global.Settings.AllowedKinds) == 0 {
-						{{ actualAllowedKinds = global.SupportedKindsDefault }}
-					}
 					<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="allowed kinds">allowed kinds</label>
-					<button
-						type="button"
-						x-show="!showAllowedKinds"
-						@mouseup="showAllowedKinds = true"
-						class="cursor-pointer px-3 py-1 text-sm rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-600 dark:hover:bg-stone-500"
-					>
-						customize allowed event kinds
-					</button>
-					<div x-show="showAllowedKinds" x-transition class="mt-4">
-						<div class="space-y-2">
-							<textarea
-								name="allowed_kinds"
-								placeholder="enter kind numbers separated by commas (e.g., 1, 3, 6, 7)"
-								class="w-full px-3 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100 h-32 font-mono text-sm"
-								@blur="saveSettings()"
-							>
-								{{ j := global.JSONString(actualAllowedKinds) }}
-								{ j[1:len(j)-1] }
-							</textarea>
-							<p class="text-xs text-stone-500 dark:text-stone-400">
-								enter kind numbers separated by commas. leave empty to use the default list.
-							</p>
-						</div>
+					<div class="space-y-2">
+						<textarea
+							name="allowed_kinds_spec"
+							placeholder="examples:
+1, 3, 6, 7, 20, 21, 22, 1111
+all
++1227, +30818, -7"
+							class="w-full px-3 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100 h-24 font-mono text-sm"
+							@blur="saveSettings()"
+						>{ global.Settings.AllowedKindsSpec }</textarea>
+						<p class="text-xs text-stone-500 dark:text-stone-400">
+							comma-separated numbers set the full list, "all" allows all kinds, and "+/-" entries add or remove from the default list
+						</p>
 					</div>
 					<div>
 						<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="browse_uri">URL pattern for the relay "browse" links</label>
@@ -494,16 +494,6 @@ templ settingsPage(loggedUser nostr.PubKey) {
 							setTimeout(() => this.saved = false, 2000)
 						}
 					},
-					async saveSettings() {
-						const response = await fetch(this.$refs.form.action, {
-							method: 'POST',
-							body: new URLSearchParams(new FormData(this.$refs.form))
-						})
-						if (response.ok) {
-							this.saved = true;
-							setTimeout(() => this.saved = false, 2000)
-						}
-					}
 				}` }
 			>
 				<form
@@ -717,6 +707,7 @@ templ settingsPage(loggedUser nostr.PubKey) {
 				</div>
 			</form>
 			{{ systemStats := getSystemStats() }}
+			{{ relayClients, relayListeners := relay.Stats() }}
 			<!-- System Section -->
 			<div
 				class="mt-8"
@@ -784,6 +775,8 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						<div class="mt-1 text-lg text-stone-900 dark:text-stone-100">total: { systemStats.Memory }</div>
 						<div class="text-xs text-stone-500 dark:text-stone-400">pyramid: { systemStats.MemoryProcess }</div>
 					</div>
+				</div>
+				<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
 					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
 						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">server</div>
 						<div class="mt-1 text-stone-900 dark:text-stone-400">domain: { global.Settings.Domain }</div>
@@ -792,6 +785,14 @@ templ settingsPage(loggedUser nostr.PubKey) {
 						if global.S.Port == "443" {
 							<div class="text-sm text-stone-600 dark:text-stone-400">managing TLS certificates</div>
 						}
+					</div>
+					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
+						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">relay</div>
+						<div class="mt-1 text-lg text-stone-900 dark:text-stone-100">clients: { relayClients }</div>
+						<div class="text-xs text-stone-500 dark:text-stone-400">subscriptions: { relayListeners }</div>
+						<div class="text-right text-sm text-stone-700 dark:text-stone-200 mt-4">
+							<a href="/log" target="_blank" class="cursor-pointer hover:underline hover:text-stone-400">/log</a>
+						</div>
 					</div>
 					<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 p-4">
 						<div class="text-sm font-medium text-stone-700 dark:text-stone-300">data usage</div>

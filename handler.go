@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -43,7 +45,15 @@ func inviteTreeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	inviteTreePage(loggedUser, nip05Names).Render(r.Context(), w)
+	onlinePubkeys := map[nostr.PubKey]struct{}{}
+	for evt := range global.IL.Main.QueryEvents(nostr.Filter{
+		Since: nostr.Now() - 60*10,
+		Kinds: []nostr.Kind{1},
+	}, 1000) {
+		onlinePubkeys[evt.PubKey] = struct{}{}
+	}
+
+	inviteTreePage(loggedUser, nip05Names, onlinePubkeys).Render(r.Context(), w)
 }
 
 func actionHandler(w http.ResponseWriter, r *http.Request) {
@@ -142,10 +152,17 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.LinkURL = v[0]
 			case "require_current_timestamp":
 				global.Settings.RequireCurrentTimestamp = v[0] == "on"
-			case "enable_ots":
-				global.Settings.EnableOTS = v[0] == "on"
 			case "accept_scheduled_events":
 				global.Settings.AcceptScheduledEvents = v[0] == "on"
+			case "allow_ephemeral_from_anyone":
+				global.Settings.AllowEphemeralFromAnyone = v[0] == "on"
+			case "validate_schema":
+				enabled := v[0] == "on"
+				if err := setSchemaValidator(enabled); err != nil {
+					http.Error(w, "failed to load schema validator: "+err.Error(), 500)
+					return
+				}
+				global.Settings.ValidateSchema = enabled
 			case "custom_update_source":
 				customUpdateSource = v[0]
 				fetchLatestVersion()
@@ -377,6 +394,11 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				if v[0] == "always" || v[0] == "when_no_pow" || v[0] == "" {
 					global.Settings.Inbox.RequireAuthForDM = v[0]
 				}
+			case "inbox_allowed_kinds":
+				if err := inbox.UpdateAllowedKindsSpec(v[0]); err != nil {
+					http.Error(w, "invalid inbox_allowed_kinds: "+err.Error(), 400)
+					return
+				}
 			case "inbox_specifically_blocked":
 				var blocked []nostr.PubKey
 				for _, s := range v {
@@ -404,22 +426,15 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				//
 				// allowed kinds settings
-			case "allowed_kinds":
-				kinds := make([]nostr.Kind, 0, len(v[0])*6)
-				// split by comma and parse each kind
-				for _, s := range strings.Split(v[0], ",") {
-					if kind, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16); err == nil {
-						kinds = append(kinds, nostr.Kind(kind))
-					}
+			case "allowed_kinds_spec":
+				kindIsAllowed, err := global.BuildKindIsAllowedFunction(v[0], global.SupportedKindsDefault)
+				if err != nil {
+					http.Error(w, "invalid allowed_kinds: "+err.Error(), 400)
+					return
 				}
-				// if no kinds are entered, set to nil to use the default list
 
-				if len(kinds) == 0 {
-					global.Settings.AllowedKinds = nil
-				} else {
-					global.Settings.AllowedKinds = kinds
-					slices.Sort(global.Settings.AllowedKinds)
-				}
+				global.Settings.AllowedKindsSpec = v[0]
+				global.KindIsAllowed = kindIsAllowed
 				//
 				// ftp settings
 			case "ftp_enabled":
@@ -478,6 +493,67 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settingsPage(loggedUser).Render(r.Context(), w)
+}
+
+func logHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, ok := global.GetLoggedUser(r)
+	if !ok || !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	_, _ = io.WriteString(w, "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>log</title><style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace;margin:12px;} .line{white-space:pre;}</style></head><body>")
+
+	writeLine := func(line string) {
+		_, _ = io.WriteString(w, "<div class=\"line\">"+html.EscapeString(line)+"</div>\n")
+	}
+
+	if global.LogFilePath != "" {
+		file, err := os.Open(global.LogFilePath)
+		if err == nil {
+			scanner := bufio.NewScanner(file)
+			buf := make([]byte, 0, 64*1024)
+			scanner.Buffer(buf, 1024*1024)
+			for scanner.Scan() {
+				writeLine(scanner.Text())
+			}
+			file.Close()
+		}
+	}
+	flusher.Flush()
+
+	stream, unsubscribe := global.SubscribeLogStream(256)
+	defer unsubscribe()
+
+	var pending string
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case chunk, ok := <-stream:
+			if !ok {
+				return
+			}
+			pending += string(chunk)
+			lines := strings.Split(pending, "\n")
+			for i := 0; i < len(lines)-1; i++ {
+				writeLine(lines[i])
+			}
+			pending = lines[len(lines)-1]
+			flusher.Flush()
+		}
+	}
 }
 
 func iconHandler(w http.ResponseWriter, r *http.Request) {

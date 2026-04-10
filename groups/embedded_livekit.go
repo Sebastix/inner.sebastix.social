@@ -136,8 +136,8 @@ func StartEmbeddedLiveKit() error {
 		return err
 	}
 
-	apiKey := "local" + randomToken(12)
-	apiSecret := "local" + randomToken(24)
+	apiKey := "local" + global.RandomString(12)
+	apiSecret := "local" + global.RandomString(24)
 
 	config := `port: 7880
 rtc:

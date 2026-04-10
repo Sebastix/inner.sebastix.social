@@ -8,35 +8,132 @@ import (
 	"github.com/fiatjaf/pyramid/pyramid"
 )
 
-templ inviteTreePage(loggedUser nostr.PubKey, nip05Names map[nostr.PubKey]string) {
+templ inviteTreePage(
+	loggedUser nostr.PubKey,
+	nip05Names map[nostr.PubKey]string,
+	onlinePubkeys map[nostr.PubKey]struct{},
+) {
 	@layout.Layout(loggedUser, "invite-tree") {
-		<div class="max-w-3xl mx-auto">
+		<div
+			class="max-w-3xl mx-auto"
+			x-data={ `{
+				target: '',
+				generating: false,
+				claiming: false,
+				get buttonLabel() {
+					if (this.generating) {
+						return 'generating...';
+					}
+					return this.target ? 'invite' : 'generate invite link';
+				},
+				get inviteActionLabel() {
+					if (this.target) {
+						return 'share this invite link: '
+					} else {
+						return 'invite new member: '
+					}
+				},
+				async generateInvite() {
+					this.generating = true;
+					try {
+						const events = await window.nostrSharedPool.querySync([location.href], { kinds: [28935] }, {
+							onauth(evtt) {
+								return window.nostr.signEvent(evtt)
+							}
+						});
+						const evt = events && events[0];
+						if (!evt) {
+							throw new Error('failed to fetch invite event');
+						}
+						const claimTag = (evt.tags || []).find(tag => tag[0] === 'claim');
+						if (!claimTag || !claimTag[1]) {
+							throw new Error('invite event missing claim tag');
+						}
+						const code = claimTag[1];
+						this.target = location.href + '?claim=' + code;
+						this.$nextTick(() => this.$refs.target && this.$refs.target.select());
+					} catch (error) {
+						console.error('error generating invite:', error);
+						alert('failed to generate invite: ' + String(error));
+					} finally {
+						this.generating = false;
+					}
+				},
+				async claimInviteFromURL() {
+					const params = new URLSearchParams(window.location.search);
+					const claim = params.get('claim');
+					if (!claim || this.claiming) {
+						return;
+					}
+					this.claiming = true;
+					try {
+						const event = await window.nostr.signEvent({
+							created_at: Math.round(Date.now() / 1000),
+							kind: 28934,
+							tags: [['claim', claim]],
+							content: ''
+						});
+						const [pub] = window.nostrSharedPool.publish([location.href], event, {
+							onauth(evtt) {
+								return window.nostr.signEvent(evtt)
+							}
+						});
+						await pub;
+						history.replaceState({}, '', location.href.split('?')[0]); // replace url here
+						authButton().handleAuth({target: {innerText: 'login'}}); // this will call .reload()
+					} catch (error) {
+						console.error('error claiming invite:', error);
+						alert('failed to claim invite: ' + String(error));
+					} finally {
+						this.claiming = false;
+					}
+				},
+				handleInviteClick() {
+					if (!this.target) {
+						this.generateInvite();
+					} else {
+						this.$refs.inviteForm.submit();
+					}
+				}
+			}` }
+			x-init="claimInviteFromURL()"
+		>
 			if pyramid.CanInviteMore(loggedUser) {
 				<form
 					method="post"
 					action="/action"
 					class="flex items-center gap-3 mb-6"
+					x-ref="inviteForm"
 				>
 					<label
 						class="font-medium themed:text-[var(--extra-color)] light:text-gray-700 dark:text-gray-300"
-					>invite new member: </label>
+						x-text="inviteActionLabel"
+					></label>
 					<input
 						type="text"
 						name="target"
 						placeholder="npub1..."
+						x-model="target"
+						x-ref="target"
 						class="flex-1 rounded-lg border-0 px-3 py-1.5 text-sm bg-white text-gray-900 dark:text-gray-100 dark:bg-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-blue-600 dark:focus:ring-blue-400"
 					/>
 					<input type="hidden" name="type" value="invite"/>
 					<button
-						type="submit"
+						type="button"
+						@click.prevent="handleInviteClick()"
+						:disabled="generating"
 						class="cursor-pointer rounded-lg px-4 py-1.5 text-sm font-semibold text-white shadow-lg transform hover:scale-105 themed:bg-[var(--extra-color)] themed:hover:bg-[rgb(from_var(--extra-color)_r_g_b_/_80%)] light:bg-stone-600 light:hover:bg-stone-700 dark:bg-stone-500 dark:hover:bg-stone-600"
-					>
-						invite
-					</button>
+						x-text="buttonLabel"
+					></button>
 				</form>
 			}
+			if len(onlinePubkeys) > 1 {
+				<div class="mb-4 text-sm font-medium themed:text-[var(--text-color)] light:text-gray-700 dark:text-gray-300">
+					{ len(onlinePubkeys) } online
+				</div>
+			}
 			<div class="themed:text-[var(--text-color)] light:text-gray-700 dark:text-gray-300">
-				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false, nip05Names)
+				@inviteTreeComponent(pyramid.AbsoluteKey, loggedUser, false, nip05Names, onlinePubkeys)
 			</div>
 		</div>
 	}
@@ -47,6 +144,7 @@ templ inviteTreeComponent(
 	loggedUser nostr.PubKey,
 	isDescendantOfLoggedUser bool,
 	nip05Names map[nostr.PubKey]string,
+	onlinePubkeys map[nostr.PubKey]struct{},
 ) {
 	<ul>
 		for pubkey, member := range pyramid.GetChildren(curr) {
@@ -64,6 +162,11 @@ templ inviteTreeComponent(
 								class="cursor-default ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium themed:bg-[var(--accent-color)] themed:text-white light:bg-blue-50 light:text-blue-700 light:ring-1 light:ring-inset light:ring-blue-600/20 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-500/20"
 							>
 								root
+							</span>
+						}
+						if _, isOnline := onlinePubkeys[pubkey]; isOnline {
+							<span class="ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium themed:bg-[var(--text-color)] themed:text-white light:bg-gray-700 light:text-gray-300 dark:bg-gray-300 dark:text-gray-700">
+								online
 							</span>
 						}
 					</span>
@@ -116,7 +219,7 @@ templ inviteTreeComponent(
 						</div>
 					}
 				</div>
-				@inviteTreeComponent(pubkey, loggedUser, isDescendantOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr), nip05Names)
+				@inviteTreeComponent(pubkey, loggedUser, isDescendantOfLoggedUser || (loggedUser != nostr.ZeroPK && loggedUser == curr), nip05Names, onlinePubkeys)
 			</li>
 		}
 	</ul>

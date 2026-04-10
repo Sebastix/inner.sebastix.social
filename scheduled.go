@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/policies"
 	"github.com/fiatjaf/pyramid/global"
@@ -86,7 +87,7 @@ func processScheduledEvents() {
 			Until: nostr.Now() + 60,
 		}, 1000) {
 			// move to main relay and broadcast
-			if err := saveToMain(event); err != nil {
+			if err := saveToMain(event); err != nil && err != eventstore.ErrDupEvent {
 				log.Error().Err(err).Stringer("event", event).Msg("failed to move scheduled event to main")
 				continue
 			}

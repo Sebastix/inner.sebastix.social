@@ -39,6 +39,7 @@ import (
 	"github.com/fiatjaf/pyramid/popular"
 	"github.com/fiatjaf/pyramid/pyramid"
 	"github.com/fiatjaf/pyramid/search"
+	"github.com/fiatjaf/pyramid/stream"
 	"github.com/fiatjaf/pyramid/uppermost"
 )
 
@@ -63,14 +64,17 @@ func main() {
 			return
 		}
 	}
+	if global.Settings.ValidateSchema {
+		if err := setSchemaValidator(true); err != nil {
+			log.Error().Err(err).Msg("failed to load schema validator")
+		}
+	}
 	defer groups.ShutdownEmbeddedLiveKit()
 	defer global.End()
 	defer search.End()
 
 	// stuff we have to initialize
 	fillInRelevantUsersMapping()
-	slices.Sort(global.SupportedKindsDefault)
-	slices.Sort(global.Settings.AllowedKinds)
 
 	// start periodic version checking
 	go func() {
@@ -80,14 +84,16 @@ func main() {
 		}
 	}()
 
-	// start periodic checking of opentimestamps proofs
+	// cleanup expired invite codes
 	go func() {
-		time.Sleep(time.Minute * 3)
-		if err := initOTS(); err == nil {
-			for {
-				checkOTS(context.Background())
-				time.Sleep(time.Hour * 4)
+		for {
+			deleted, err := cleanupExpiredInvites()
+			if err != nil {
+				log.Error().Err(err).Msg("failed to cleanup expired invites")
+			} else if deleted > 0 {
+				log.Info().Int("deleted", deleted).Msg("cleaned up expired invites")
 			}
+			time.Sleep(time.Hour * 6)
 		}
 	}()
 
@@ -122,6 +128,7 @@ func main() {
 	// init basic http routes
 	relay.Router().HandleFunc("/action", actionHandler)
 	relay.Router().HandleFunc("/settings", settingsHandler)
+	relay.Router().HandleFunc("/log", logHandler)
 	relay.Router().HandleFunc("/search/reindex", search.StreamingReindexHTML)
 	relay.Router().HandleFunc("/u", memberPageHandler)
 	relay.Router().HandleFunc("/u/{pubkey}", memberPageHandler)
@@ -147,6 +154,7 @@ func main() {
 	groups.Init(relay)
 	blossom.Init(relay)
 	paywall.Init(relay)
+	stream.Init(relay)
 	favorites.Init()
 	inbox.Init()
 	internal.Init()
@@ -313,14 +321,6 @@ func main() {
 				paywall.RecomputeMemberPaywall(ctx, by)
 			}
 		}
-
-		// trigger opentimestamping of selected event kinds
-		if global.Settings.EnableOTS {
-			switch event.Kind {
-			case 1, 11, 1111, 1222, 1244, 20, 21, 22, 24, 9802:
-				go triggerOTS(ctx, event)
-			}
-		}
 	}
 
 	relay.OnEventDeleted = handleDeleted
@@ -376,7 +376,10 @@ func main() {
 
 		pk := global.Settings.RelayInternalSecretKey.Public()
 		info.Self = &pk
-		info.PubKey = &global.Settings.RelayPubkey
+		for root := range pyramid.GetChildren(pk) {
+			info.PubKey = &global.Settings.RelayPubkey
+			break
+		}
 
 		info.Name = global.Settings.RelayName
 		info.Description = global.Settings.RelayDescription
@@ -459,6 +462,9 @@ func run(ctx context.Context) error {
 	mux.Handle("/groups/", groups.Handler)
 	mux.Handle("/groups", groups.Handler)
 	mux.Handle("/.well-known/nip29/", groups.Handler)
+
+	mux.Handle("/stream/", stream.Handler)
+	mux.Handle("/stream", stream.Handler)
 
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath+"/", inbox.Relay)
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath, inbox.Relay)

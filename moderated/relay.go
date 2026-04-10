@@ -94,8 +94,11 @@ func setupEnabled() {
 		policies.PreventLargeContent(global.Settings.MaxEventSize),
 		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
 		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
-		policies.RestrictToSpecifiedKinds(true, global.GetAllowedKinds()...),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
+			if !global.KindIsAllowed(evt.Kind) {
+				return true, "blocked: kind unallowed"
+			}
+
 			if global.Settings.Moderated.MinPoW > 0 {
 				difficulty := nip13.Difficulty(evt.ID)
 				if uint(difficulty) < global.Settings.Moderated.MinPoW {

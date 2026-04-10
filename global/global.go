@@ -7,7 +7,6 @@ import (
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"fiatjaf.com/nostr/sdk"
 	"github.com/kelseyhightower/envconfig"
-	"github.com/rs/zerolog"
 )
 
 var (
@@ -43,8 +42,6 @@ const (
 	RelayBlossom   RelayID = "blossom"
 )
 
-var Log = zerolog.New(os.Stderr).Output(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
-
 func Init() error {
 	err := envconfig.Process("", &S)
 	if err != nil {
@@ -57,6 +54,9 @@ func Init() error {
 
 	if err := os.MkdirAll(S.DataPath, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory '%s'", S.DataPath)
+	}
+	if err := InitLogging(S.DataPath); err != nil {
+		Log.Warn().Err(err).Msg("failed to initialize log file")
 	}
 
 	// databases
@@ -81,6 +81,11 @@ func Init() error {
 	IL.Internal, err = MMMM.EnsureLayer("internal")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'internal': %w", err)
+	}
+
+	IL.Invites, err = MMMM.EnsureLayer("invites")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'invites': %w", err)
 	}
 
 	IL.Personal, err = MMMM.EnsureLayer("personal")
@@ -155,6 +160,7 @@ var IL struct {
 	// specific
 	Favorites *mmm.IndexingLayer
 	Internal  *mmm.IndexingLayer
+	Invites   *mmm.IndexingLayer
 	Personal  *mmm.IndexingLayer
 	Groups    *mmm.IndexingLayer
 	Inbox     *mmm.IndexingLayer

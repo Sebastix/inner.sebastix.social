@@ -36,15 +36,16 @@ type UserSettings struct {
 	} `json:"theme"`
 
 	// general
-	BrowseURI               string `json:"browse_uri"`
-	LinkURL                 string `json:"link_url"`
-	MaxInvitesPerPerson     int    `json:"max_invites_per_person,omitempty"`
-	MaxInvitesAtEachLevel   []int  `json:"max_invites_at_each_level,omitempty"`
-	MaxEventSize            int    `json:"max_event_size"`
-	RequireCurrentTimestamp bool   `json:"require_current_timestamp"`
-	EnableOTS               bool   `json:"enable_ots"`
-	AcceptScheduledEvents   bool   `json:"accept_scheduled_events"`
-	Search                  struct {
+	BrowseURI                string `json:"browse_uri"`
+	LinkURL                  string `json:"link_url"`
+	MaxInvitesPerPerson      int    `json:"max_invites_per_person,omitempty"`
+	MaxInvitesAtEachLevel    []int  `json:"max_invites_at_each_level,omitempty"`
+	MaxEventSize             int    `json:"max_event_size"`
+	RequireCurrentTimestamp  bool   `json:"require_current_timestamp"`
+	AcceptScheduledEvents    bool   `json:"accept_scheduled_events"`
+	AllowEphemeralFromAnyone bool   `json:"allow_ephemeral_from_anyone"`
+	ValidateSchema           bool   `json:"validate_schema"`
+	Search                   struct {
 		Enable    bool     `json:"enable"`
 		Languages []string `json:"languages"`
 	} `json:"search"`
@@ -60,8 +61,11 @@ type UserSettings struct {
 
 	RelayInternalSecretKey nostr.SecretKey `json:"relay_internal_secret_key"`
 
-	BlockedIPs   []string     `json:"blocked_ips"`
-	AllowedKinds []nostr.Kind `json:"allowed_kinds,omitempty"`
+	BlockedIPs       []string `json:"blocked_ips"`
+	AllowedKindsSpec string   `json:"allowed_kinds_spec,omitempty"`
+
+	// Deprecated: remove this after people have migrated
+	AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
 
 	// per-relay
 	Internal struct {
@@ -79,9 +83,14 @@ type UserSettings struct {
 	Inbox struct {
 		RelayMetadata
 		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
-		HellthreadLimit     int            `json:"hellthread_limit"`
-		MinDMPoW            int            `json:"min_dm_pow"`
-		RequireAuthForDM    string         `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
+		AllowedKindsSpec    string         `json:"allowed_kinds_spec,omitempty"`
+
+		// Deprecated: remove this after people have migrated
+		AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
+
+		HellthreadLimit  int    `json:"hellthread_limit"`
+		MinDMPoW         int    `json:"min_dm_pow"`
+		RequireAuthForDM string `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
 	} `json:"inbox"`
 
 	Groups struct {
@@ -101,6 +110,11 @@ type UserSettings struct {
 		MaxUserUploadSize            int   `json:"max_user_upload_size,omitempty"` // in megabytes, 0 means unlimited
 		MaxUserUploadSizeAtEachLevel []int `json:"max_user_upload_size_at_each_level,omitempty"`
 	} `json:"blossom"`
+
+	Stream struct {
+		Enabled bool   `json:"enabled"`
+		Salt    string `json:"salt"`
+	} `json:"stream"`
 
 	Popular struct {
 		RelayMetadata
@@ -237,14 +251,14 @@ func getUserSettingsPath() string {
 func loadUserSettings() error {
 	// start it with the defaults
 	Settings = UserSettings{
-		BrowseURI:               "https://jumble.social/?r={url}",
-		LinkURL:                 "nostr:{code}",
-		MaxInvitesPerPerson:     4,
-		MaxEventSize:            10000,
-		RequireCurrentTimestamp: false,
-		EnableOTS:               true,
-		BlockedIPs:              []string{},
-		AcceptScheduledEvents:   true,
+		BrowseURI:                "https://jumble.social/?r={url}",
+		LinkURL:                  "nostr:{code}",
+		MaxInvitesPerPerson:      4,
+		MaxEventSize:             10000,
+		RequireCurrentTimestamp:  false,
+		BlockedIPs:               []string{},
+		AcceptScheduledEvents:    true,
+		AllowEphemeralFromAnyone: true,
 	}
 	Settings.Search.Enable = false
 	Settings.Search.Languages = []string{"en"}
@@ -267,6 +281,9 @@ func loadUserSettings() error {
 	// FTP settings
 	Settings.FTP.Enabled = false
 	Settings.FTP.Password = ""
+
+	// Stream settings
+	Settings.Stream.Enabled = false
 
 	// theme defaults
 	Settings.Theme.TextColor = "#ffffff"
@@ -302,7 +319,7 @@ func loadUserSettings() error {
 			Settings.RelayInternalSecretKey = nostr.Generate()
 
 			if err := SaveUserSettings(); err != nil {
-				return fmt.Errorf("failed to save settings: %w", err)
+				return fmt.Errorf("failed to save initial settings: %w", err)
 			}
 
 			return nil
@@ -315,8 +332,29 @@ func loadUserSettings() error {
 		return err
 	}
 
-	// temporary: replace {url} in settings
-	Settings.BrowseURI = strings.ReplaceAll(Settings.BrowseURI, "__URL__", "{url}")
+	if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
+		csv, _ := json.Marshal(Settings.AllowedKindsLegacy)
+		Settings.AllowedKindsSpec = string(csv)[1 : len(csv)-1]
+		if err := SaveUserSettings(); err != nil {
+			return fmt.Errorf("failed to save settings after migrating allowed_kinds: %w", err)
+		}
+	}
+	Settings.AllowedKindsLegacy = nil
+
+	if Settings.Inbox.AllowedKindsSpec == "" && len(Settings.Inbox.AllowedKindsLegacy) > 0 {
+		csv, _ := json.Marshal(Settings.Inbox.AllowedKindsLegacy)
+		Settings.Inbox.AllowedKindsSpec = string(csv)[1 : len(csv)-1]
+		if err := SaveUserSettings(); err != nil {
+			return fmt.Errorf("failed to save settings after migrating inbox allowed_kinds: %w", err)
+		}
+	}
+	Settings.Inbox.AllowedKindsLegacy = nil
+
+	if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
+		return err
+	} else {
+		KindIsAllowed = kindIsAllowed
+	}
 
 	return nil
 }
@@ -337,20 +375,16 @@ func SaveUserSettings() error {
 // this must be sorted, which we do on main()
 var SupportedKindsDefault = []nostr.Kind{
 	0, 1, 3, 5, 6, 7, 8, 9,
-	11, 16, 20, 21, 22, 24, 818, 1040,
-	1063, 1111, 1222, 1244, 1617, 1618, 1619, 1621,
+	11, 16, 20, 21, 22, 24, 777, 818, 1040,
+	1063, 1111, 1222, 1227, 1244, 1617, 1618, 1619, 1621,
 	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
 	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
-	10005, 10006, 10007, 10009, 10012, 10015, 10019, 10030, 10050,
-	10063, 10101, 10102, 10317, 17375, 24133, 30000, 30002,
-	30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
+	10005, 10006, 10007, 10009, 10012, 10013, 10015, 10019, 10027, 10030, 10050,
+	10063, 10777, 10101, 10102, 10317, 17375,
+	23194, 23195, 24133,
+	30000, 30002, 30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
 	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,
 	31924, 31925, 39701,
 }
 
-func GetAllowedKinds() []nostr.Kind {
-	if len(Settings.AllowedKinds) > 0 {
-		return Settings.AllowedKinds
-	}
-	return SupportedKindsDefault
-}
+var KindIsAllowed func(nostr.Kind) bool
