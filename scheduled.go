@@ -18,15 +18,14 @@ import (
 var scheduled *khatru.Relay
 
 func initScheduledRelay() {
-	scheduled = khatru.NewRelay()
 	db := global.IL.Scheduled
-	scheduled = khatru.NewRelay()
+	scheduled = global.NewRelay()
 	scheduled.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/scheduled"
 
-	scheduled.UseEventstore(db, 100)
+	scheduled.UseEventstore(db, global.Settings.Limits.MaxQueryLimit)
 	scheduled.QueryStored = func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 		return func(yield func(nostr.Event) bool) {
-			for evt := range db.QueryEvents(filter, 100) {
+			for evt := range db.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
 				// people can only see their own scheduled events
 				if khatru.IsAuthed(ctx, evt.PubKey) {
 					if !yield(evt) {
@@ -40,8 +39,12 @@ func initScheduledRelay() {
 	scheduled.OnRequest = policies.SeqRequest(
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
-		policies.FilterIPRateLimiter(20, time.Minute, 100),
+		policies.FilterIPRateLimiter(20, time.Minute, global.Settings.Limits.MaxQueryLimit),
 		func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			if reject, msg := global.RejectTooManyOpenSubscriptions(ctx, filter); reject {
+				return reject, msg
+			}
+
 			// only allow authed users to access scheduled events
 			authedPublicKeys := khatru.GetAllAuthed(ctx)
 			if len(authedPublicKeys) == 0 {

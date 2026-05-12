@@ -63,7 +63,7 @@ templ StreamPage(loggedUser nostr.PubKey, streamKey string) {
 					a livestreaming video server.
 				</p>
 			</div>
-			if pyramid.IsRoot(loggedUser) {
+			if global.Settings.Stream.Enabled && pyramid.IsRoot(loggedUser) {
 				// streams list
 				<div class="mt-8">
 					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">currently live</h3>

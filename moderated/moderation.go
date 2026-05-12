@@ -28,7 +28,7 @@ func approveEvent(approver nostr.PubKey, id nostr.ID) error {
 	// save to moderated layer
 	var err error
 	if evt.Kind.IsAddressable() || evt.Kind.IsReplaceable() {
-		err = global.IL.Moderated.ReplaceEvent(evt)
+		_, err = global.IL.Moderated.ReplaceEvent(evt)
 	} else {
 		err = global.IL.Moderated.SaveEvent(evt)
 	}
@@ -77,7 +77,7 @@ func approveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/"+global.Settings.Moderated.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Moderated.GetPageURL(), 302)
 }
 
 func rejectHandler(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +99,7 @@ func rejectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/"+global.Settings.Moderated.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Moderated.GetPageURL(), 302)
 }
 
 func listEventsNeedingModerationHandler(ctx context.Context) ([]nip86.IDReason, error) {
@@ -113,7 +113,7 @@ func listEventsNeedingModerationHandler(ctx context.Context) ([]nip86.IDReason, 
 	}
 
 	var events []nip86.IDReason
-	for evt := range global.IL.ModerationQueue.QueryEvents(nostr.Filter{}, 1000) {
+	for evt := range global.IL.ModerationQueue.QueryEvents(nostr.Filter{}, 1_000) {
 		events = append(events, nip86.IDReason{ID: evt.ID})
 	}
 	return events, nil

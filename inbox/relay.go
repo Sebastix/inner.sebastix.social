@@ -24,7 +24,7 @@ var (
 )
 
 func Init() {
-	Relay = khatru.NewRelay()
+	Relay = global.NewRelay()
 
 	slices.Sort(supportedKindsDefault)
 	initAllowedKinds()
@@ -51,7 +51,7 @@ func setupDisabled() {
 }
 
 func setupEnabled() {
-	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Inbox.HTTPBasePath
+	Relay.ServiceURL = global.Settings.Inbox.GetServiceURL()
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
 	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
@@ -65,7 +65,7 @@ func setupEnabled() {
 	Relay.QueryStored = func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 		if len(filter.Kinds) == 0 {
 			// only normal kinds or no kinds specified
-			return global.IL.Inbox.QueryEvents(filter, 500)
+			return global.IL.Inbox.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit)
 		}
 
 		secretFilter := filter
@@ -83,16 +83,16 @@ func setupEnabled() {
 		if len(secretFilter.Kinds) > 0 && len(normalFilter.Kinds) > 0 {
 			// mixed kinds - need to split the filter and query both
 			return eventstore.SortedMerge(
-				global.IL.Inbox.QueryEvents(normalFilter, 500),
-				global.IL.Secret.QueryEvents(secretFilter, 500),
+				global.IL.Inbox.QueryEvents(normalFilter, global.Settings.Limits.MaxQueryLimit),
+				global.IL.Secret.QueryEvents(secretFilter, global.Settings.Limits.MaxQueryLimit),
 				filter.GetTheoreticalLimit(),
 			)
 		} else if len(secretFilter.Kinds) > 0 && len(normalFilter.Kinds) == 0 {
 			// only secret kinds requested
-			return global.IL.Secret.QueryEvents(filter, 500)
+			return global.IL.Secret.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit)
 		} else {
 			// only normal kinds requested
-			return global.IL.Inbox.QueryEvents(filter, 500)
+			return global.IL.Inbox.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit)
 		}
 	}
 	Relay.Count = func(ctx context.Context, filter nostr.Filter) (uint32, error) {
@@ -106,11 +106,13 @@ func setupEnabled() {
 		}
 	}
 	Relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
+		var err error
 		if slices.Contains(secretKinds, event.Kind) {
-			return global.IL.Secret.ReplaceEvent(event)
+			_, err = global.IL.Secret.ReplaceEvent(event)
 		} else {
-			return global.IL.Inbox.ReplaceEvent(event)
+			_, err = global.IL.Inbox.ReplaceEvent(event)
 		}
+		return err
 	}
 	Relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
 		// TODO: allow deleting messages received
@@ -132,9 +134,13 @@ func setupEnabled() {
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
+		global.RejectTooManyOpenSubscriptions,
 		rejectFilter,
 	)
 	Relay.OnEvent = policies.SeqEvent(
+		policies.PreventLargeContent(global.Settings.Limits.MaxEventSize),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxIndexableTags, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxEntriesInFollowList, nil, []nostr.Kind{3}),
 		policies.PreventNormalDuplicates(global.IL.Inbox.QueryEvents),
 		policies.RejectUnprefixedNostrReferences,
 		policies.EventPubKeyRateLimiter(1, 2*time.Minute, 15),
@@ -194,7 +200,7 @@ func enableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupEnabled()
-	http.Redirect(w, r, "/"+global.Settings.Inbox.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Inbox.GetPageURL(), 302)
 }
 
 func disableHandler(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +219,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupDisabled()
-	http.Redirect(w, r, "/"+global.Settings.Inbox.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Inbox.GetPageURL(), 302)
 }
 
 func checkWoTHandler(w http.ResponseWriter, r *http.Request) {

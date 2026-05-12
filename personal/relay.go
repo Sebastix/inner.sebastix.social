@@ -21,7 +21,7 @@ var (
 )
 
 func Init() {
-	Relay = khatru.NewRelay()
+	Relay = global.NewRelay()
 
 	if global.Settings.Personal.Enabled {
 		setupEnabled()
@@ -45,7 +45,7 @@ func setupDisabled() {
 func setupEnabled() {
 	db := global.IL.Personal
 
-	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Personal.HTTPBasePath
+	Relay.ServiceURL = global.Settings.Personal.GetServiceURL()
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
 	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
@@ -69,7 +69,8 @@ func setupEnabled() {
 	}
 
 	Relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
-		return db.ReplaceEvent(event)
+		_, err := db.ReplaceEvent(event)
+		return err
 	}
 
 	Relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
@@ -84,7 +85,11 @@ func setupEnabled() {
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
 		policies.MustAuth,
-		func(ctx context.Context, _ nostr.Filter) (bool, string) {
+		func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			if reject, msg := global.RejectTooManyOpenSubscriptions(ctx, filter); reject {
+				return reject, msg
+			}
+
 			authedPublicKeys := khatru.GetAllAuthed(ctx)
 			if len(authedPublicKeys) == 0 {
 				return true, "auth-required: only relay members have access to personal storage"
@@ -101,9 +106,9 @@ func setupEnabled() {
 	)
 
 	Relay.OnEvent = policies.SeqEvent(
-		policies.PreventLargeContent(global.Settings.MaxEventSize),
-		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
-		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
+		policies.PreventLargeContent(global.Settings.Limits.MaxEventSize),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxIndexableTags, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxEntriesInFollowList, nil, []nostr.Kind{3}),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if !pyramid.IsMember(evt.PubKey) {
 				return true, "blocked: this event isn't from a relay member"
@@ -141,7 +146,7 @@ func query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 	// if ids are given fetch such ids and check their authorship
 	if len(filter.IDs) > 0 {
 		return func(yield func(nostr.Event) bool) {
-			for evt := range db.QueryEvents(filter, 500) {
+			for evt := range db.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
 				if evt.PubKey == authed {
 					if !yield(evt) {
 						return
@@ -153,7 +158,7 @@ func query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 
 	// otherwise add the authenticated user to the filter so that is enforced
 	filter.Authors = []nostr.PubKey{authed}
-	return db.QueryEvents(filter, 500)
+	return db.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit)
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +177,7 @@ func enableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupEnabled()
-	http.Redirect(w, r, "/"+global.Settings.Personal.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Personal.GetPageURL(), 302)
 }
 
 func disableHandler(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +196,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupDisabled()
-	http.Redirect(w, r, "/"+global.Settings.Personal.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Personal.GetPageURL(), 302)
 }
 
 func changeRelayNameHandler(ctx context.Context, name string) error {

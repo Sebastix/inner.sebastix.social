@@ -21,7 +21,7 @@ var (
 )
 
 func Init() {
-	Relay = khatru.NewRelay()
+	Relay = global.NewRelay()
 
 	if global.Settings.Favorites.Enabled {
 		// relay enabled
@@ -47,7 +47,7 @@ func setupDisabled() {
 func setupEnabled() {
 	db := global.IL.Favorites
 
-	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Favorites.HTTPBasePath
+	Relay.ServiceURL = global.Settings.Favorites.GetServiceURL()
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
 	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
@@ -66,7 +66,7 @@ func setupEnabled() {
 	// cache pinned event at startup
 	global.CachePinnedEvent(global.RelayFavorites)
 
-	Relay.UseEventstore(db, 500)
+	Relay.UseEventstore(db, global.Settings.Limits.MaxQueryLimit)
 
 	// use custom QueryStored with pinned event support
 	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayFavorites)
@@ -79,12 +79,13 @@ func setupEnabled() {
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
 		policies.FilterIPRateLimiter(20, time.Minute, 100),
+		global.RejectTooManyOpenSubscriptions,
 	)
 
 	Relay.OnEvent = policies.SeqEvent(
-		policies.PreventLargeContent(global.Settings.MaxEventSize),
-		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
-		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
+		policies.PreventLargeContent(global.Settings.Limits.MaxEventSize),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxIndexableTags, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxEntriesInFollowList, nil, []nostr.Kind{3}),
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if !global.KindIsAllowed(evt.Kind) {
 				return true, "blocked: kind unallowed"
@@ -135,7 +136,7 @@ func enableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupEnabled()
-	http.Redirect(w, r, "/"+global.Settings.Favorites.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Favorites.GetPageURL(), 302)
 }
 
 func disableHandler(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +155,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupDisabled()
-	http.Redirect(w, r, "/"+global.Settings.Favorites.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Favorites.GetPageURL(), 302)
 }
 
 func changeRelayNameHandler(ctx context.Context, name string) error {

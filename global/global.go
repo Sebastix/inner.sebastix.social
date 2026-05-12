@@ -11,35 +11,15 @@ import (
 
 var (
 	S struct {
-		Port     string `envconfig:"PORT" default:"3366"`
-		SFTPPort string `envconvig:"SFTP_PORT" default:"2222"`
-		Host     string `envconfig:"HOST" default:"localhost"`
-		DataPath string `envconfig:"DATA_PATH" default:"./data"`
+		Port          string `envconfig:"PORT" default:"3366"`
+		SFTPPort      string `envconvig:"SFTP_PORT" default:"2222"`
+		Host          string `envconfig:"HOST" default:"localhost"`
+		DataPath      string `envconfig:"DATA_PATH" default:"./data"`
+		NoAutoUpdates bool   `envconfig:"NO_AUTO_UPDATES"`
 	}
 	Nostr    *sdk.System
 	MMMM     *mmm.MultiMmapManager
 	Settings UserSettings
-)
-
-type RelayID string
-
-// String returns the string representation of RelayID
-func (r RelayID) String() string {
-	return string(r)
-}
-
-const (
-	RelayMain      RelayID = "main"
-	RelayInternal  RelayID = "internal"
-	RelayPersonal  RelayID = "personal"
-	RelayFavorites RelayID = "favorites"
-	RelayGroups    RelayID = "groups"
-	RelayInbox     RelayID = "inbox"
-	RelaySecret    RelayID = "secret"
-	RelayModerated RelayID = "moderated"
-	RelayPopular   RelayID = "popular"
-	RelayUppermost RelayID = "uppermost"
-	RelayBlossom   RelayID = "blossom"
 )
 
 func Init() error {

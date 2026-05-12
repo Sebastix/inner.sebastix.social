@@ -3,7 +3,7 @@ module github.com/fiatjaf/pyramid
 go 1.26
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260403153006-371cecdb8498
+	fiatjaf.com/nostr v0.0.0-20260504222624-a5aeff31d771
 	github.com/FastFilter/xorfilter v0.2.1
 	github.com/a-h/templ v0.3.1001
 	github.com/bep/debounce v1.2.1
@@ -31,7 +31,7 @@ require (
 	buf.build/go/protovalidate v0.13.1 // indirect
 	buf.build/go/protoyaml v0.6.0 // indirect
 	cel.dev/expr v0.24.0 // indirect
-	fiatjaf.com/lib v0.3.6 // indirect
+	fiatjaf.com/lib v0.3.7 // indirect
 	github.com/ImVexed/fasturl v0.0.0-20230304231329-4e41488060f3 // indirect
 	github.com/PowerDNS/lmdb-go v1.9.3 // indirect
 	github.com/RoaringBitmap/roaring v1.9.4 // indirect
@@ -98,8 +98,6 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 // indirect
 	github.com/livekit/psrpc v0.7.1 // indirect
@@ -139,7 +137,6 @@ require (
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/redis/go-redis/v9 v9.11.0 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/savsgio/gotils v0.0.0-20240704082632-aef3928b8a38 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
@@ -186,6 +183,6 @@ require (
 )
 
 replace (
-	github.com/gwuhaolin/livego => github.com/fiatjaf/livego v0.0.0-20260406031930-1b6c4d5e40f0
+	github.com/gwuhaolin/livego => github.com/fiatjaf/livego v0.0.0-20260508230646-4473342da854
 	github.com/livekit/livekit-server => github.com/livekit/livekit-server v1.9.11
 )

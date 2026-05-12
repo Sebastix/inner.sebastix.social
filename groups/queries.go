@@ -8,17 +8,19 @@ import (
 	"fiatjaf.com/nostr/khatru"
 )
 
-func (s *GroupsState) Query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
+func Query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 	return func(yield func(nostr.Event) bool) {
 		authed := khatru.GetAllAuthed(ctx)
 
-		_, hasGroupIds := filter.Tags["d"]
-		if !hasGroupIds {
-			_, hasGroupIds = filter.Tags["h"]
+		var query iter.Seq[nostr.Event]
+		if filter.Search == "" {
+			query = State.DB.QueryEvents(filter, 1500)
+		} else {
+			query = queryGroupSearch(filter)
 		}
 
-		for evt := range s.DB.QueryEvents(filter, 1500) {
-			if s.hideEventFromReader(evt, hasGroupIds, authed) {
+		for evt := range query {
+			if hideEventFromReader(filter, evt, authed) {
 				continue
 			}
 
@@ -29,36 +31,59 @@ func (s *GroupsState) Query(ctx context.Context, filter nostr.Filter) iter.Seq[n
 	}
 }
 
-func (s *GroupsState) ShouldPreventBroadcast(evt nostr.Event, filter nostr.Filter, authed []nostr.PubKey) bool {
-	_, hasGroupIds := filter.Tags["d"]
-	if !hasGroupIds {
-		_, hasGroupIds = filter.Tags["h"]
-	}
-
-	return s.hideEventFromReader(evt, hasGroupIds, authed)
+func ShouldPreventBroadcast(evt nostr.Event, filter nostr.Filter, authed []nostr.PubKey) bool {
+	return hideEventFromReader(filter, evt, authed)
 }
 
-func (s *GroupsState) hideEventFromReader(evt nostr.Event, filterHasGroupIds bool, authed []nostr.PubKey) bool {
-	group := s.GetGroupFromEvent(evt)
+//go:inline
+func hideEventFromReader(filter nostr.Filter, evt nostr.Event, authed []nostr.PubKey) bool {
+	group := State.GetGroupFromEvent(evt)
 	if nil == group {
 		return true
 	}
 
-	if !filterHasGroupIds {
-		if (group.Hidden || group.Private) && !group.AnyOfTheseIsAMember(authed) {
-			// don't reveal anything about hidden/private groups in lists unless queried by a member
+	if group.Hidden {
+		// 'hidden' works only by hiding the group from abrangent queries like listing all groups in a relay etc
+		if requestedGroupIds(filter) == nil {
 			return true
 		}
-	} else {
-		// filtering by checking if a user is a member of a group (when 'private') is already done by
-		// s.RequestAuthWhenNecessary(), so we don't have to do it here
-		// assume the requester has access to all these groups
-		if !group.Hidden && !group.Private {
-			return false
-		} else if group.AnyOfTheseIsAMember(authed) {
-			return false
+
+		// if specific groups were requested then the 'hidden' field has no effect as the reader
+		// already knows about the existence of the group
+		// <pass>
+	}
+
+	if group.Private {
+		// 'private' works by hiding group contents (and member lists etc), but not group metadata
+		// group metadata is still public -- UNLESS the group is also marked as hidden, that's a special case
+		if evt.Kind == nostr.KindSimpleGroupMetadata {
+			if group.Hidden {
+				// still allow reading for members only
+				if group.AnyOfTheseIsAMember(authed) {
+					return false
+				}
+
+				return true
+			} else {
+				// metadata is allowed
+				// <pass>
+			}
+		} else {
+			// allow reading for members only
+			if group.AnyOfTheseIsAMember(authed) {
+				return false
+			}
 		}
 	}
 
 	return false
+}
+
+//go:inline
+func requestedGroupIds(filter nostr.Filter) []string {
+	groupIds, _ := filter.Tags["h"]
+	if len(groupIds) == 0 {
+		groupIds, _ = filter.Tags["d"]
+	}
+	return groupIds
 }

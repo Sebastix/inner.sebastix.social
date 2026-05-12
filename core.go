@@ -268,7 +268,7 @@ func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 			// use this special query that filters content for paying visitors
 			authed := khatru.GetAllAuthed(ctx)
 
-			for evt := range global.IL.Main.QueryEvents(filter, 500) {
+			for evt := range global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
 				if evt.Tags.Has("nip63") {
 					// this is a paywalled event, check if reader can read
 					for _, pk := range authed {
@@ -295,7 +295,7 @@ func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 			}
 		} else {
 			// otherwise do a normal query
-			for evt := range global.IL.Main.QueryEvents(filter, 500) {
+			for evt := range global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
 				if !yield(evt) {
 					return
 				}
@@ -314,7 +314,7 @@ func onConnect(ctx context.Context) {
 func preventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Event) bool {
 	if global.Settings.Groups.Enabled && (nip29.MetadataEventKinds.Includes(event.Kind) || event.Tags.Find("h") != nil) {
 		// nip29 metadata event
-		if groups.State.ShouldPreventBroadcast(event, filter, ws.AuthedPublicKeys) {
+		if groups.ShouldPreventBroadcast(event, filter, ws.AuthedPublicKeys) {
 			return true
 		}
 	}
@@ -511,13 +511,13 @@ func saveToMain(event nostr.Event) error {
 	}
 
 	if global.Settings.Search.Enable {
-		return search.Main.IndexEvent(event)
+		return search.Main.SaveEvent(event)
 	} else {
 		return nil
 	}
 }
 
-func replaceOnMain(event nostr.Event) error {
+func replaceOnMain(event nostr.Event) ([]nostr.Event, error) {
 	if global.Settings.Search.Enable {
 		search.Main.Lock()
 		defer search.Main.Unlock()
@@ -533,14 +533,15 @@ func replaceOnMain(event nostr.Event) error {
 		}
 	}
 
-	if err := global.IL.Main.ReplaceEvent(event); err != nil {
-		return err
+	replaced, err := global.IL.Main.ReplaceEvent(event)
+	if err != nil {
+		return replaced, err
 	}
 
 	if global.Settings.Search.Enable {
-		return search.Main.IndexEvent(event)
+		return replaced, search.Main.SaveEvent(event)
 	} else {
-		return nil
+		return replaced, nil
 	}
 }
 
@@ -556,7 +557,7 @@ func queryStored(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 		// query both normal and groups
 		return eventstore.SortedMerge(
 			queryNormal(ctx, filter),
-			groups.State.Query(ctx, filter),
+			groups.Query(ctx, filter),
 			filter.GetTheoreticalLimit(),
 		)
 	}
@@ -567,7 +568,7 @@ func queryStored(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 	}
 
 	if len(filter.Tags["h"]) > 0 {
-		return groups.State.Query(ctx, filter)
+		return groups.Query(ctx, filter)
 	}
 
 	groupsFilter := filter
@@ -586,12 +587,12 @@ func queryStored(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 		// mixed kinds - need to split the filter and query both
 		return eventstore.SortedMerge(
 			queryNormal(ctx, normalFilter),
-			groups.State.Query(ctx, groupsFilter),
+			groups.Query(ctx, groupsFilter),
 			filter.GetTheoreticalLimit(),
 		)
 	} else if groupsFilter.Kinds != nil && normalFilter.Kinds == nil {
 		// only groups kinds requested
-		return groups.State.Query(ctx, filter)
+		return groups.Query(ctx, filter)
 	} else {
 		// only normal kinds requested
 		return queryNormal(ctx, filter)
@@ -612,7 +613,7 @@ func queryNormal(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 	}
 	if checkGroupsDB {
 		return eventstore.SortedMerge(
-			groups.State.Query(ctx, filter),
+			groups.Query(ctx, filter),
 			queryMain(ctx, filter),
 			filter.GetTheoreticalLimit(),
 		)
@@ -623,6 +624,10 @@ func queryNormal(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 }
 
 func handleDeleted(ctx context.Context, deleted nostr.Event) {
+	if err := groups.DeleteEventFromGroupSearch(deleted); err != nil {
+		log.Error().Err(err).Stringer("event", deleted).Msg("failed to delete event from group search index")
+	}
+
 	if deleted.Kind == 1163 {
 		paywall.RecomputeMemberPaywall(ctx, deleted.PubKey)
 		return

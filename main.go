@@ -29,6 +29,7 @@ import (
 	"github.com/fiatjaf/pyramid/blossom"
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/global/relays"
 	"github.com/fiatjaf/pyramid/grasp"
 	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/inbox"
@@ -76,13 +77,15 @@ func main() {
 	// stuff we have to initialize
 	fillInRelevantUsersMapping()
 
-	// start periodic version checking
-	go func() {
-		for {
-			fetchLatestVersion()
-			time.Sleep(time.Hour * 3)
-		}
-	}()
+	if !global.S.NoAutoUpdates {
+		// start periodic version checking
+		go func() {
+			for {
+				fetchLatestVersion()
+				time.Sleep(time.Hour * 3)
+			}
+		}()
+	}
 
 	// cleanup expired invite codes
 	go func() {
@@ -105,7 +108,8 @@ func main() {
 	}
 
 	// init main relay
-	relay = khatru.NewRelay()
+	relay = global.NewRelay()
+	relays.MainRelay = relay
 	relay.Info.Name = "main" // for debugging purposes
 	relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain
 	relay.Negentropy = true
@@ -128,6 +132,8 @@ func main() {
 	// init basic http routes
 	relay.Router().HandleFunc("/action", actionHandler)
 	relay.Router().HandleFunc("/settings", settingsHandler)
+	relay.Router().HandleFunc("/clients", detailsHandler)
+	relay.Router().HandleFunc("/clients/{clientId}", clientDetailsHandler)
 	relay.Router().HandleFunc("/log", logHandler)
 	relay.Router().HandleFunc("/search/reindex", search.StreamingReindexHTML)
 	relay.Router().HandleFunc("/u", memberPageHandler)
@@ -185,13 +191,15 @@ func main() {
 		}
 	}
 	relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
+		var err error
 		if event.Tags.Find("h") != nil {
 			// nip29 logic
-			return global.IL.Groups.ReplaceEvent(event)
+			_, err = global.IL.Groups.ReplaceEvent(event)
 		} else {
 			// normal logic
-			return replaceOnMain(event)
+			_, err = replaceOnMain(event)
 		}
+		return err
 	}
 	relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
 		// try to delete from everywhere
@@ -215,7 +223,7 @@ func main() {
 	// do not expire groups stuff, but do expire main stuff
 	relay.StartExpirationManager(
 		func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
-			return global.IL.Main.QueryEvents(filter, 500)
+			return global.IL.Main.QueryEvents(filter, 1_000)
 		},
 		func(ctx context.Context, id nostr.ID) error {
 			return global.IL.Main.DeleteEvent(id)
@@ -230,6 +238,10 @@ func main() {
 	relay.OnRequest = policies.SeqRequest(
 		policies.NoComplexFilters,
 		func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			if reject, msg := global.RejectTooManyOpenSubscriptions(ctx, filter); reject {
+				return reject, msg
+			}
+
 			if !global.Settings.Search.Enable && filter.Search != "" {
 				return true, "search is disabled"
 			}
@@ -237,7 +249,7 @@ func main() {
 			if filter.Tags["h"] != nil {
 				// nip29 logic
 				if global.Settings.Groups.Enabled {
-					return groups.State.RequestAuthWhenNecessary(ctx, filter)
+					return groups.RequestAuthWhenNecessary(ctx, filter)
 				} else {
 					return true, "groups are disabled"
 				}
@@ -247,7 +259,7 @@ func main() {
 				if idx := slices.Index(filter.Kinds, nip29k); idx != -1 {
 					// nip29 logic
 					if global.Settings.Groups.Enabled {
-						return groups.State.RequestAuthWhenNecessary(ctx, filter)
+						return groups.RequestAuthWhenNecessary(ctx, filter)
 					} else {
 						return true, "groups are disabled"
 					}
@@ -259,7 +271,7 @@ func main() {
 		},
 	)
 	relay.OnEvent = func(ctx context.Context, event nostr.Event) (reject bool, msg string) {
-		if len(event.Content) > global.Settings.MaxEventSize {
+		if len(event.Content) > global.Settings.Limits.MaxEventSize {
 			return true, "content is too big"
 		}
 
@@ -279,15 +291,15 @@ func main() {
 		if event.Tags.Find("h") != nil {
 			// nip29 logic
 			if global.Settings.Groups.Enabled {
-				return groups.State.RejectEvent(ctx, event)
+				return groups.RejectEvent(ctx, event)
 			} else {
 				return true, "groups are disabled"
 			}
 		} else {
 			// normal logic
 			return policies.SeqEvent(
-				policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
-				policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
+				policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxIndexableTags, []nostr.Kind{3}, nil),
+				policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxEntriesInFollowList, nil, []nostr.Kind{3}),
 				policies.RejectUnprefixedNostrReferences,
 				grasp.RejectIncomingEvent,
 				policies.PreventNormalDuplicates(global.IL.Main.QueryEvents),
@@ -299,7 +311,7 @@ func main() {
 	relay.OnEventSaved = func(ctx context.Context, event nostr.Event) {
 		if h := event.Tags.Find("h"); h != nil {
 			// nip29 logic
-			groups.State.HandleEventSaved(event)
+			groups.HandleEventSaved(event)
 			return
 		}
 
@@ -387,6 +399,10 @@ func main() {
 		info.Icon = global.Settings.RelayIcon
 		info.Limitation = &nip11.RelayLimitationDocument{
 			RestrictedWrites: true,
+			MaxMessageLength: global.Settings.Limits.MaxEventSize,
+			MaxEventTags:     global.Settings.Limits.MaxIndexableTags,
+			MaxSubscriptions: global.Settings.Limits.MaxSubscriptionsOpen,
+			MaxLimit:         global.Settings.Limits.MaxQueryLimit,
 		}
 		info.Software = "https://github.com/Sebastix/inner.sebastix.social/tree/inner.sebastix.social"
 		info.Version = currentVersion
@@ -499,6 +515,37 @@ func run(ctx context.Context) error {
 			return
 		}
 
+		// relays with special domains or subdomains
+		var subRelay *khatru.Relay
+		var basePath string
+		switch host {
+		case global.Settings.Internal.HTTPDomain:
+			subRelay, basePath = internal.Relay, global.Settings.Internal.HTTPBasePath
+		case global.Settings.Personal.HTTPDomain:
+			subRelay, basePath = personal.Relay, global.Settings.Personal.HTTPBasePath
+		case global.Settings.Favorites.HTTPDomain:
+			subRelay, basePath = favorites.Relay, global.Settings.Favorites.HTTPBasePath
+		case global.Settings.Inbox.HTTPDomain:
+			subRelay, basePath = inbox.Relay, global.Settings.Inbox.HTTPBasePath
+		case global.Settings.Popular.HTTPDomain:
+			subRelay, basePath = popular.Relay, global.Settings.Popular.HTTPBasePath
+		case global.Settings.Uppermost.HTTPDomain:
+			subRelay, basePath = uppermost.Relay, global.Settings.Uppermost.HTTPBasePath
+		case global.Settings.Moderated.HTTPDomain:
+			subRelay, basePath = moderated.Relay, global.Settings.Moderated.HTTPBasePath
+		}
+		if subRelay != nil {
+			if r.Header.Get("Upgrade") == "websocket" ||
+				r.Header.Get("Accept") == "application/nostr+json" ||
+				r.Header.Get("Content-Type") == "application/nostr+json+rpc" {
+				subRelay.WithServiceURL(global.Settings.WSScheme()+host).ServeHTTP(w, r)
+				return
+			}
+
+			http.Redirect(w, r, global.Settings.HTTPScheme()+global.Settings.Domain+"/"+basePath+"/", http.StatusFound)
+			return
+		}
+
 		// otherwise handle normally
 		mainHandler.ServeHTTP(w, r)
 	}))
@@ -525,14 +572,30 @@ func run(ctx context.Context) error {
 	}
 
 	if port == "443" {
+		hosts := []string{
+			global.Settings.Domain,
+			"livekit." + global.Settings.Domain,
+			"turn." + global.Settings.Domain,
+		}
+
+		for _, domain := range []string{
+			global.Settings.Internal.HTTPDomain,
+			global.Settings.Personal.HTTPDomain,
+			global.Settings.Favorites.HTTPDomain,
+			global.Settings.Inbox.HTTPDomain,
+			global.Settings.Popular.HTTPDomain,
+			global.Settings.Uppermost.HTTPDomain,
+			global.Settings.Moderated.HTTPDomain,
+		} {
+			if domain != "" {
+				hosts = append(hosts, domain)
+			}
+		}
+
 		manager := &autocert.Manager{
-			Prompt: func(_ string) bool { return true },
-			HostPolicy: autocert.HostWhitelist(
-				global.Settings.Domain,
-				"livekit."+global.Settings.Domain,
-				"turn."+global.Settings.Domain,
-			),
-			Cache: autocert.DirCache("certs"),
+			Prompt:     func(_ string) bool { return true },
+			HostPolicy: autocert.HostWhitelist(hosts...),
+			Cache:      autocert.DirCache("certs"),
 		}
 
 		// HTTP server on 80 for ACME challenges and user access

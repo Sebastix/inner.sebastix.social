@@ -14,13 +14,12 @@ import (
 
 type UserSettings struct {
 	// relay metadata
-	Domain           string       `json:"domain"`
-	RelayPubkey      nostr.PubKey `json:"relay_pubkey"`
-	RelayName        string       `json:"relay_name"`
-	RelayDescription string       `json:"relay_description"`
-	RelayContact     string       `json:"relay_contact"`
-	RelayIcon        string       `json:"relay_icon"`
-	Pinned           nostr.ID     `json:"pinned,omitempty"`
+	Domain           string   `json:"domain"`
+	RelayName        string   `json:"relay_name"`
+	RelayDescription string   `json:"relay_description"`
+	RelayContact     string   `json:"relay_contact"`
+	RelayIcon        string   `json:"relay_icon"`
+	Pinned           nostr.ID `json:"pinned,omitempty"`
 
 	// theme
 	Theme struct {
@@ -40,7 +39,6 @@ type UserSettings struct {
 	LinkURL                  string `json:"link_url"`
 	MaxInvitesPerPerson      int    `json:"max_invites_per_person,omitempty"`
 	MaxInvitesAtEachLevel    []int  `json:"max_invites_at_each_level,omitempty"`
-	MaxEventSize             int    `json:"max_event_size"`
 	RequireCurrentTimestamp  bool   `json:"require_current_timestamp"`
 	AcceptScheduledEvents    bool   `json:"accept_scheduled_events"`
 	AllowEphemeralFromAnyone bool   `json:"allow_ephemeral_from_anyone"`
@@ -63,9 +61,13 @@ type UserSettings struct {
 
 	BlockedIPs       []string `json:"blocked_ips"`
 	AllowedKindsSpec string   `json:"allowed_kinds_spec,omitempty"`
+	Limits           Limits   `json:"limits"`
 
 	// Deprecated: remove this after people have migrated
 	AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
+
+	// Deprecated: remove this after people have migrated
+	MaxEventSize int `json:"max_event_size,omitempty"`
 
 	// per-relay
 	Internal struct {
@@ -137,16 +139,25 @@ type UserSettings struct {
 	} `json:"ftp"`
 }
 
+type Limits struct {
+	MaxEventSize           int `json:"max_event_size"`
+	MaxSubscriptionsOpen   int `json:"max_subscriptions_open"`
+	MaxTotalCostOpen       int `json:"max_total_cost_open"`
+	MaxIndexableTags       int `json:"max_indexable_tags"`
+	MaxEntriesInFollowList int `json:"max_entries_in_follow_list"`
+	MaxQueryLimit          int `json:"max_query_limit"`
+}
+
 type RelayMetadata struct {
 	base string // identifies where this is
 
-	Enabled      bool         `json:"enabled"`
-	Pubkey       nostr.PubKey `json:"pubkey"`
-	Name         string       `json:"name"`
-	Description  string       `json:"description"`
-	Icon         string       `json:"icon"`
-	HTTPBasePath string       `json:"path"`
-	Pinned       nostr.ID     `json:"pinned,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Icon         string   `json:"icon"`
+	HTTPBasePath string   `json:"path"`
+	HTTPDomain   string   `json:"domain,omitempty"`
+	Pinned       nostr.ID `json:"pinned,omitempty"`
 }
 
 func (rm RelayMetadata) GetName() string {
@@ -193,6 +204,14 @@ func (rm RelayMetadata) GetIcon() string {
 
 func (rm RelayMetadata) IsIconDefault() bool {
 	return rm.Icon == ""
+}
+
+func (rm RelayMetadata) GetServiceURL() string {
+	return Settings.WSScheme() + Settings.Domain + "/" + rm.HTTPBasePath
+}
+
+func (rm RelayMetadata) GetPageURL() string {
+	return Settings.HTTPScheme() + Settings.Domain + "/" + rm.HTTPBasePath + "/"
 }
 
 func (us UserSettings) HTTPScheme() string {
@@ -251,11 +270,18 @@ func getUserSettingsPath() string {
 func loadUserSettings() error {
 	// start it with the defaults
 	Settings = UserSettings{
-		BrowseURI:                "https://jumble.social/?r={url}",
-		LinkURL:                  "nostr:{code}",
-		MaxInvitesPerPerson:      4,
-		MaxEventSize:             10000,
-		RequireCurrentTimestamp:  false,
+		BrowseURI:               "https://jumble.social/?r={url}",
+		LinkURL:                 "nostr:{code}",
+		MaxInvitesPerPerson:     4,
+		RequireCurrentTimestamp: false,
+		Limits: Limits{
+			MaxEventSize:           10_000,
+			MaxSubscriptionsOpen:   2_000,
+			MaxTotalCostOpen:       7_200,
+			MaxIndexableTags:       14,
+			MaxEntriesInFollowList: 1600,
+			MaxQueryLimit:          500,
+		},
 		BlockedIPs:               []string{},
 		AcceptScheduledEvents:    true,
 		AllowEphemeralFromAnyone: true,
@@ -350,6 +376,11 @@ func loadUserSettings() error {
 	}
 	Settings.Inbox.AllowedKindsLegacy = nil
 
+	if Settings.MaxEventSize != 0 {
+		Settings.Limits.MaxEventSize = Settings.MaxEventSize
+	}
+	Settings.MaxEventSize = 0
+
 	if kindIsAllowed, err := BuildKindIsAllowedFunction(Settings.AllowedKindsSpec, SupportedKindsDefault); err != nil {
 		return err
 	} else {
@@ -380,11 +411,11 @@ var SupportedKindsDefault = []nostr.Kind{
 	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
 	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
 	10005, 10006, 10007, 10009, 10012, 10013, 10015, 10019, 10027, 10030, 10050,
-	10063, 10777, 10101, 10102, 10317, 17375,
+	10063, 10777, 10101, 10102, 10317, 15128, 17375,
 	23194, 23195, 24133,
 	30000, 30002, 30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
 	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,
-	31924, 31925, 39701,
+	31924, 31925, 35128, 39701,
 }
 
 var KindIsAllowed func(nostr.Kind) bool

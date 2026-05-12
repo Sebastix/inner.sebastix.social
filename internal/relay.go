@@ -20,7 +20,7 @@ var (
 )
 
 func Init() {
-	Relay = khatru.NewRelay()
+	Relay = global.NewRelay()
 
 	if global.Settings.Internal.Enabled {
 		// relay enabled
@@ -46,7 +46,7 @@ func setupDisabled() {
 func setupEnabled() {
 	db := global.IL.Internal
 
-	Relay.ServiceURL = global.Settings.WSScheme() + global.Settings.Domain + "/" + global.Settings.Internal.HTTPBasePath
+	Relay.ServiceURL = global.Settings.Internal.GetServiceURL()
 
 	Relay.ManagementAPI.ChangeRelayName = changeRelayNameHandler
 	Relay.ManagementAPI.ChangeRelayDescription = changeRelayDescriptionHandler
@@ -65,7 +65,7 @@ func setupEnabled() {
 	// cache pinned event at startup
 	global.CachePinnedEvent(global.RelayInternal)
 
-	Relay.UseEventstore(db, 500)
+	Relay.UseEventstore(db, global.Settings.Limits.MaxQueryLimit)
 
 	// use custom QueryStored with pinned event support
 	Relay.QueryStored = global.QueryStoredWithPinned(global.RelayInternal)
@@ -78,7 +78,11 @@ func setupEnabled() {
 		policies.NoComplexFilters,
 		policies.NoSearchQueries,
 		policies.MustAuth,
-		func(ctx context.Context, _ nostr.Filter) (bool, string) {
+		func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			if reject, msg := global.RejectTooManyOpenSubscriptions(ctx, filter); reject {
+				return reject, msg
+			}
+
 			authedPublicKeys := khatru.GetAllAuthed(ctx)
 			if len(authedPublicKeys) == 0 {
 				return true, "auth-required: this is only viewable by relay members"
@@ -95,9 +99,9 @@ func setupEnabled() {
 	)
 
 	Relay.OnEvent = policies.SeqEvent(
-		policies.PreventLargeContent(global.Settings.MaxEventSize),
-		policies.PreventTooManyIndexableTags(15, []nostr.Kind{3}, nil),
-		policies.PreventTooManyIndexableTags(1400, nil, []nostr.Kind{3}),
+		policies.PreventLargeContent(global.Settings.Limits.MaxEventSize),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxIndexableTags, []nostr.Kind{3}, nil),
+		policies.PreventTooManyIndexableTags(global.Settings.Limits.MaxEntriesInFollowList, nil, []nostr.Kind{3}),
 		policies.OnlyAllowNIP70ProtectedEvents,
 		func(ctx context.Context, evt nostr.Event) (bool, string) {
 			if !global.KindIsAllowed(evt.Kind) {
@@ -136,7 +140,7 @@ func enableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupEnabled()
-	http.Redirect(w, r, "/"+global.Settings.Internal.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Internal.GetPageURL(), 302)
 }
 
 func disableHandler(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +159,7 @@ func disableHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setupDisabled()
-	http.Redirect(w, r, "/"+global.Settings.Internal.HTTPBasePath+"/", 302)
+	http.Redirect(w, r, global.Settings.Internal.GetPageURL(), 302)
 }
 
 func changeRelayNameHandler(ctx context.Context, name string) error {
