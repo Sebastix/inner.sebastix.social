@@ -3,7 +3,6 @@ pyramid/pyramid
 pyramid-exe
 pyramid-bin
 pyramid-old-binary
-pyramid-*
 management.jsonl
 settings.json
 .env
@@ -12,4 +11,5 @@ db
 data
 node_modules
 .idea
+pyramid-*
 package-lock.json
