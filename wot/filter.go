@@ -1,4 +1,4 @@
-package inbox
+package wot
 
 import (
 	"context"
@@ -16,23 +16,28 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-func pubKeyToShid(pubkey nostr.PubKey) uint64 {
-	return binary.BigEndian.Uint64(pubkey[16:24])
-}
+var log = global.Log.With().Str("module", "wot").Logger()
 
-type WotXorFilter struct {
+type XorFilter struct {
 	Items int
 	xorfilter.Xor8
 }
 
-func (wxf WotXorFilter) Contains(pubkey nostr.PubKey) bool {
-	if wxf.Items == 0 {
+func (f XorFilter) Contains(pubkey nostr.PubKey) bool {
+	if f.Items == 0 {
 		return false
 	}
-	return wxf.Xor8.Contains(pubKeyToShid(pubkey))
+	return f.Xor8.Contains(pubKeyToShid(pubkey))
 }
 
-func computeAggregatedWoT(ctx context.Context) (WotXorFilter, error) {
+func pubKeyToShid(pubkey nostr.PubKey) uint64 {
+	return binary.BigEndian.Uint64(pubkey[16:24])
+}
+
+// ComputeAggregated computes the aggregated web-of-trust filter for all pyramid
+// members: it fetches the follow lists of all members, then the follow lists of
+// all those followed pubkeys, and builds a xor filter from the full set.
+func ComputeAggregated(ctx context.Context) (XorFilter, error) {
 	members := make([]nostr.PubKey, 0, pyramid.Members.Size())
 	for k := range pyramid.Members.Range {
 		members = append(members, k)
@@ -44,8 +49,12 @@ func computeAggregatedWoT(ctx context.Context) (WotXorFilter, error) {
 
 	log.Info().Int("n", len(members)).Msg("fetching primary follow lists for members")
 	for _, member := range members {
+		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, member) {
+			continue
+		}
+
 		if err := sem.Acquire(ctx, 1); err != nil {
-			return WotXorFilter{}, fmt.Errorf("failed to acquire: %w", err)
+			return XorFilter{}, fmt.Errorf("failed to acquire: %w", err)
 		}
 
 		wg.Go(func() {
@@ -70,6 +79,10 @@ func computeAggregatedWoT(ctx context.Context) (WotXorFilter, error) {
 
 	log.Info().Int("n", queue.Size()).Msg("fetching secondary follow lists for follows")
 	for user := range queue.Range {
+		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, user) {
+			continue
+		}
+
 		all.Add(1)
 		go func() {
 			if err := sem.Acquire(ctx, 1); err != nil {
@@ -102,13 +115,17 @@ func computeAggregatedWoT(ctx context.Context) (WotXorFilter, error) {
 		close(res)
 	}()
 
-	return makeWoTFilter(res), nil
+	return makeFilter(res), nil
 }
 
-func makeWoTFilter(m chan nostr.PubKey) WotXorFilter {
+func makeFilter(m chan nostr.PubKey) XorFilter {
 	shids := make([]uint64, 0, 60000)
 	shidMap := make(map[uint64]struct{}, 60000)
 	for pk := range m {
+		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, pk) {
+			continue
+		}
+
 		shid := pubKeyToShid(pk)
 		if _, alreadyAdded := shidMap[shid]; !alreadyAdded {
 			shidMap[shid] = struct{}{}
@@ -118,13 +135,13 @@ func makeWoTFilter(m chan nostr.PubKey) WotXorFilter {
 
 	log.Info().Int("n", len(shids)).Msg("finishing wot xor filter")
 	if len(shids) == 0 {
-		return WotXorFilter{}
+		return XorFilter{}
 	}
 
 	xf, err := xorfilter.Populate(shids)
 	if err != nil {
 		nostr.InfoLogger.Println("failed to populate filter", len(shids), err)
-		return WotXorFilter{}
+		return XorFilter{}
 	}
-	return WotXorFilter{len(shids), *xf}
+	return XorFilter{len(shids), *xf}
 }

@@ -41,17 +41,14 @@ func setupDisabled() {
 }
 
 func setupEnabled() {
-	State = NewGroupsState(Options{
-		DB:        global.IL.Groups,
-		SecretKey: global.Settings.RelayInternalSecretKey,
-		Broadcast: hostRelay.BroadcastEvent,
-	})
+	State = NewGroupsState()
 
 	Handler.mux = http.NewServeMux()
 
 	Handler.mux.HandleFunc("POST /groups/disable", disableHandler)
 	Handler.mux.HandleFunc("POST /groups/livekit/start", startEmbeddedLiveKitHandler)
 	Handler.mux.HandleFunc("POST /groups/livekit/stop", stopEmbeddedLiveKitHandler)
+	Handler.mux.HandleFunc("POST /groups/livekit/log", livekitLogHandler)
 	Handler.mux.HandleFunc("POST /groups/livekit/webhook", livekitWebhookHandler)
 	Handler.mux.HandleFunc("POST /groups/wipe/{groupId}", wipeGroupHandler)
 	Handler.mux.HandleFunc("/groups/{groupId}", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +67,7 @@ func setupEnabled() {
 
 		// query last 5 events for this group
 		events := make([]nostr.Event, 0, 5)
-		for evt := range State.DB.QueryEvents(nostr.Filter{
+		for evt := range global.IL.Main.QueryEvents(nostr.Filter{
 			Kinds: []nostr.Kind{9, 11, 1111, 31922, 31923},
 			Tags:  nostr.TagMap{"h": []string{groupId}},
 			Limit: 5,

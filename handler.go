@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,12 +12,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"fiatjaf.com/nostr/nip05"
 	"fiatjaf.com/nostr/nip19"
 
+	"github.com/bep/debounce"
 	"github.com/fiatjaf/pyramid/blossom"
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
@@ -27,34 +27,15 @@ import (
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/operator"
 	"github.com/fiatjaf/pyramid/personal"
 	"github.com/fiatjaf/pyramid/popular"
 	"github.com/fiatjaf/pyramid/pyramid"
 	"github.com/fiatjaf/pyramid/search"
+	"github.com/fiatjaf/pyramid/stream"
 	"github.com/fiatjaf/pyramid/uppermost"
 	"github.com/pemistahl/lingua-go"
 )
-
-func inviteTreeHandler(w http.ResponseWriter, r *http.Request) {
-	loggedUser, _ := global.GetLoggedUser(r)
-	var nip05Names map[nostr.PubKey]string
-	if global.Settings.NIP05.Enabled {
-		nip05Names = make(map[nostr.PubKey]string, pyramid.Members.Size())
-		for name, pubkey := range global.Settings.NIP05.Names {
-			nip05Names[pubkey] = name
-		}
-	}
-
-	onlinePubkeys := map[nostr.PubKey]struct{}{}
-	for evt := range global.IL.Main.QueryEvents(nostr.Filter{
-		Since: nostr.Now() - 60*10,
-		Kinds: []nostr.Kind{1},
-	}, 1000) {
-		onlinePubkeys[evt.PubKey] = struct{}{}
-	}
-
-	inviteTreePage(loggedUser, nip05Names, onlinePubkeys).Render(r.Context(), w)
-}
 
 func actionHandler(w http.ResponseWriter, r *http.Request) {
 	var type_ pyramid.Action
@@ -80,10 +61,17 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 403)
 		return
 	}
+	if type_ == pyramid.ActionInvite {
+		if err := deletePendingAccessRequests(target); err != nil {
+			log.Warn().Err(err).Str("target", target.Hex()).Msg("failed to delete pending access requests after invite action")
+		}
+	}
 
 	go publishMembershipChange(target, type_ == pyramid.ActionInvite)
 	http.Redirect(w, r, "/", 302)
 }
+
+var relayMetadataUpdate = debounce.New(time.Minute)
 
 func settingsHandler(w http.ResponseWriter, r *http.Request) {
 	loggedUser, _ := global.GetLoggedUser(r)
@@ -96,6 +84,7 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 
 		var delayedRedirectTarget string
+
 		for k, v := range r.PostForm {
 			v[0] = strings.TrimSpace(v[0])
 
@@ -164,6 +153,8 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.RequireCurrentTimestamp = v[0] == "on"
 			case "accept_scheduled_events":
 				global.Settings.AcceptScheduledEvents = v[0] == "on"
+			case "allow_access_request":
+				global.Settings.AllowAccessRequest = v[0] == "on"
 			case "allow_ephemeral_from_anyone":
 				global.Settings.AllowEphemeralFromAnyone = v[0] == "on"
 			case "validate_schema":
@@ -194,6 +185,14 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.Groups.LiveKitAPIKey = v[0]
 			case "livekit_api_secret":
 				global.Settings.Groups.LiveKitAPISecret = v[0]
+			case "stream_port":
+				global.Settings.Stream.Port, _ = strconv.Atoi(v[0])
+
+				defer func() {
+					if global.Settings.Stream.Enabled {
+						go stream.Restart()
+					}
+				}()
 			case "enable_search":
 				wasEnabled := global.Settings.Search.Enable
 				global.Settings.Search.Enable = v[0] == "on"
@@ -252,6 +251,9 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "failed to add root user: "+err.Error(), 500)
 					return
 				}
+				if err := deletePendingAccessRequests(target); err != nil {
+					log.Warn().Err(err).Str("target", target.Hex()).Msg("failed to delete pending access requests after adding root user")
+				}
 				//
 				// nip-05 settings
 			case "nip05_enabled":
@@ -260,10 +262,13 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				// basic metadata of all relays
 			case "main_name":
 				global.Settings.RelayName = v[0]
+				relayMetadataUpdate(publishRelayMetadata)
 			case "main_description":
 				global.Settings.RelayDescription = v[0]
+				relayMetadataUpdate(publishRelayMetadata)
 			case "main_icon":
 				global.Settings.RelayIcon = v[0]
+				relayMetadataUpdate(publishRelayMetadata)
 			case "main_pinned":
 				global.Settings.Pinned = checkPinnedID(v[0], global.IL.Main)
 				global.CachePinnedEvent(global.RelayMain)
@@ -546,6 +551,37 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 					global.Settings.Blossom.MaxUserUploadSize, _ = strconv.Atoi(v[0])
 					global.Settings.Blossom.MaxUserUploadSizeAtEachLevel = nil
 				}
+			case "blossom_allow_group_members":
+				global.Settings.Blossom.AllowGroupMembers = v[0] == "on"
+			case "blossom_max_group_member_upload_size":
+				global.Settings.Blossom.MaxGroupMemberUploadSize, _ = strconv.Atoi(v[0])
+			case "nsite_enabled":
+				global.Settings.Nsite.Enabled = v[0] == "on"
+				go restartSoon()
+			case "nsite_domain":
+				domain, err := normalizeDomainInput(v[0])
+				if err != nil {
+					http.Error(w, err.Error(), 400)
+					return
+				}
+
+				if domain == global.Settings.Domain {
+					http.Error(w, "can't be the same as the relay root domain", 400)
+					return
+				}
+
+				global.Settings.Nsite.Domain = domain
+				go restartSoon()
+			case "operator_google_client_id":
+				global.Settings.Operator.GoogleClientID = v[0]
+				operator.SetupEnabled()
+			case "operator_google_client_secret":
+				global.Settings.Operator.GoogleClientSecret = v[0]
+				operator.SetupEnabled()
+			case "operator_registration_filter":
+				if v[0] == "members" || v[0] == "wot" || v[0] == "" {
+					global.Settings.Operator.RegistrationFilter = v[0]
+				}
 			}
 		}
 
@@ -590,58 +626,7 @@ func logHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", 500)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	_, _ = io.WriteString(w, "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>log</title><style>body{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,\"Liberation Mono\",\"Courier New\",monospace;margin:12px;} .line{white-space:pre;}</style></head><body>")
-
-	writeLine := func(line string) {
-		_, _ = io.WriteString(w, "<div class=\"line\">"+html.EscapeString(line)+"</div>\n")
-	}
-
-	if global.LogFilePath != "" {
-		file, err := os.Open(global.LogFilePath)
-		if err == nil {
-			scanner := bufio.NewScanner(file)
-			buf := make([]byte, 0, 64*1024)
-			scanner.Buffer(buf, 1024*1024)
-			for scanner.Scan() {
-				writeLine(scanner.Text())
-			}
-			file.Close()
-		}
-	}
-	flusher.Flush()
-
-	stream, unsubscribe := global.SubscribeLogStream(256)
-	defer unsubscribe()
-
-	var pending string
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case chunk, ok := <-stream:
-			if !ok {
-				return
-			}
-			pending += string(chunk)
-			lines := strings.Split(pending, "\n")
-			for i := 0; i < len(lines)-1; i++ {
-				writeLine(lines[i])
-			}
-			pending = lines[len(lines)-1]
-			flusher.Flush()
-		}
-	}
+	global.LogHandler(w, r, filepath.Join(global.S.DataPath, "log"))
 }
 
 func iconHandler(w http.ResponseWriter, r *http.Request) {
@@ -1036,7 +1021,6 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	// compute stats for all IndexingLayer instances
 	mainStats, _ := global.IL.Main.ComputeStats(mmm.StatsOptions{})
 	systemStats, _ := global.IL.System.ComputeStats(mmm.StatsOptions{})
-	groupsStats, _ := global.IL.Groups.ComputeStats(mmm.StatsOptions{})
 	favoritesStats, _ := global.IL.Favorites.ComputeStats(mmm.StatsOptions{})
 	internalStats, _ := global.IL.Internal.ComputeStats(mmm.StatsOptions{})
 	personalStats, _ := global.IL.Personal.ComputeStats(mmm.StatsOptions{})
@@ -1045,7 +1029,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	uppermostStats, _ := global.IL.Uppermost.ComputeStats(mmm.StatsOptions{})
 	inboxStats, _ := global.IL.Inbox.ComputeStats(mmm.StatsOptions{})
 
-	StatsPage(loggedUser, mainStats, systemStats, groupsStats, favoritesStats, internalStats, personalStats, moderatedStats, popularStats, uppermostStats, inboxStats).Render(r.Context(), w)
+	StatsPage(loggedUser, mainStats, systemStats, favoritesStats, internalStats, personalStats, moderatedStats, popularStats, uppermostStats, inboxStats).Render(r.Context(), w)
 }
 
 func syncHandler(w http.ResponseWriter, r *http.Request) {

@@ -7,12 +7,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/blossom"
 
 	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/pyramid"
 )
 
@@ -43,6 +45,9 @@ func Init(relay *khatru.Relay) {
 func setupDisabled() {
 	Handler.mux = http.NewServeMux()
 	Handler.mux.HandleFunc("POST /blossom/enable", enableHandler)
+	Handler.mux.HandleFunc("GET /blossom/blobs", blobsPageHandler)
+	Handler.mux.HandleFunc("GET /blossom/u/{pubkey}", userPageHandler)
+	Handler.mux.HandleFunc("DELETE /blossom/b/{sha256}", deleteUserBlobHandler)
 	Handler.mux.HandleFunc("/blossom/", pageHandler)
 }
 
@@ -65,21 +70,28 @@ func setupEnabled() {
 		}
 		return file, nil, nil
 	}
-	Server.DeleteBlob = func(ctx context.Context, sha256 string, ext string) error {
-		return os.Remove(filepath.Join(blobDir, sha256+ext))
-	}
+	Server.DeleteBlob = deleteBlob
 
 	Server.RejectUpload = func(ctx context.Context, auth *nostr.Event, size int, ext string) (bool, string, int) {
 		if auth == nil {
 			return true, "authentication required", 401
 		}
-		if !pyramid.IsMember(auth.PubKey) {
-			return true, "only pyramid members can upload blobs", 403
+		isMember := pyramid.IsMember(auth.PubKey)
+		isGroupMember := global.Settings.Blossom.AllowGroupMembers &&
+			groups.IsMemberOfAnyGroup(auth.PubKey)
+		if !isMember && !isGroupMember {
+			return true, "only pyramid or group members can upload blobs", 403
 		}
 
 		// check user upload size limit
 		if !pyramid.IsRoot(auth.PubKey) {
-			maxSize := pyramid.GetMaxBlossomUploadSizeFor(auth.PubKey) * 1024 * 1024
+			// Pyramid members use the tree based limit, group-only members use the flat group limit
+			var maxSize int
+			if isMember {
+				maxSize = pyramid.GetMaxBlossomUploadSizeFor(auth.PubKey) * 1024 * 1024
+			} else {
+				maxSize = global.Settings.Blossom.MaxGroupMemberUploadSize * 1024 * 1024
+			}
 			if maxSize > 0 {
 				if size > maxSize {
 					return true, "upload by itself exceeds user storage limit", 413
@@ -100,12 +112,99 @@ func setupEnabled() {
 
 	Handler.mux = http.NewServeMux()
 	Handler.mux.HandleFunc("POST /blossom/disable", disableHandler)
+	Handler.mux.HandleFunc("GET /blossom/blobs", blobsPageHandler)
+	Handler.mux.HandleFunc("GET /blossom/u/{pubkey}", userPageHandler)
+	Handler.mux.HandleFunc("DELETE /blossom/b/{sha256}", deleteUserBlobHandler)
 	Handler.mux.HandleFunc("/blossom/", pageHandler)
+}
+
+func deleteBlob(ctx context.Context, sha256 string, ext string) error {
+	entries, err := os.ReadDir(blobDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), sha256) {
+			if err := os.Remove(filepath.Join(blobDir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func pageHandler(w http.ResponseWriter, r *http.Request) {
 	loggedUser, _ := global.GetLoggedUser(r)
 	blossomPage(loggedUser).Render(r.Context(), w)
+}
+
+func userPageHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsMember(loggedUser) {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+
+	pubkeyInput := r.PathValue("pubkey")
+	if pubkeyInput == "" {
+		http.Error(w, "missing pubkey", 400)
+		return
+	}
+
+	user := global.PubKeyFromInput(pubkeyInput)
+	if user == nostr.ZeroPK {
+		http.Error(w, "invalid pubkey", 400)
+		return
+	}
+
+	blossomUserPage(loggedUser, user).Render(r.Context(), w)
+}
+
+func blobsPageHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	blossomAllBlobsPage(loggedUser).Render(r.Context(), w)
+}
+
+func deleteUserBlobHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, _ := global.GetLoggedUser(r)
+
+	if !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "only root can delete other users' blobs", 403)
+		return
+	}
+
+	sha256 := r.PathValue("sha256")
+	if sha256 == "" {
+		http.Error(w, "missing sha256", 400)
+		return
+	}
+
+	pubkeyInput := r.URL.Query().Get("user")
+	targetUser := global.PubKeyFromInput(pubkeyInput)
+	if targetUser == nostr.ZeroPK {
+		http.Error(w, "invalid pubkey", 400)
+		return
+	}
+
+	// delete the descriptor for target user
+	if err := BlobIndex.Delete(r.Context(), sha256, targetUser); err != nil {
+		http.Error(w, "delete failed: "+err.Error(), 500)
+		return
+	}
+
+	// delete physical file if no other descriptors remain
+	if bd, _ := BlobIndex.Get(r.Context(), sha256); bd == nil {
+		deleteBlob(r.Context(), sha256, "<irrelevant>")
+	}
+
+	w.WriteHeader(200)
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {

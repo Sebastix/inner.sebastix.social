@@ -1,13 +1,25 @@
 package global
 
 import (
+	"embed"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore"
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"fiatjaf.com/nostr/sdk"
 	"github.com/kelseyhightower/envconfig"
 )
+
+//go:embed assets/*
+var assets embed.FS
 
 var (
 	S struct {
@@ -20,6 +32,7 @@ var (
 	Nostr    *sdk.System
 	MMMM     *mmm.MultiMmapManager
 	Settings UserSettings
+	PublicIP string
 )
 
 func Init() error {
@@ -28,15 +41,15 @@ func Init() error {
 		return fmt.Errorf("envconfig: %w", err)
 	}
 
+	if err := InitLogging(S.DataPath); err != nil {
+		return fmt.Errorf("failed to initialize logging: %w", err)
+	}
 	if err := loadUserSettings(); err != nil {
 		return fmt.Errorf("user settings: %w", err)
 	}
 
 	if err := os.MkdirAll(S.DataPath, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory '%s'", S.DataPath)
-	}
-	if err := InitLogging(S.DataPath); err != nil {
-		Log.Warn().Err(err).Msg("failed to initialize log file")
 	}
 
 	// databases
@@ -68,14 +81,18 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'invites': %w", err)
 	}
 
+	IL.PendingAccess, err = MMMM.EnsureLayer("pending-access")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'pending-access': %w", err)
+	}
+
 	IL.Personal, err = MMMM.EnsureLayer("personal")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'personal': %w", err)
 	}
 
-	IL.Groups, err = MMMM.EnsureLayer("groups")
-	if err != nil {
-		return fmt.Errorf("failed to ensure 'groups': %w", err)
+	if err := migrateGroupsLayer(); err != nil {
+		return fmt.Errorf("groups migration: %w", err)
 	}
 
 	IL.Favorites, err = MMMM.EnsureLayer("favorites")
@@ -123,6 +140,77 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'blossom': %w", err)
 	}
 
+	IL.OperatorBucket, err = MMMM.EnsureLayer("operator")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'operator': %w", err)
+	}
+
+	for _, url := range []string{"https://api.ipify.org", "https://httpbin.org/ip"} {
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			continue
+		}
+		ip := strings.TrimSpace(string(body))
+		if url == "https://httpbin.org/ip" {
+			var v struct{ Origin string }
+			if err := json.Unmarshal(body, &v); err != nil {
+				continue
+			}
+			ip = v.Origin
+		}
+		if ip != "" {
+			PublicIP = ip
+			break
+		}
+	}
+
+	return nil
+}
+
+func migrateGroupsLayer() error {
+	groupsDir := filepath.Join(S.DataPath, "groups")
+	_, err := os.Stat(groupsDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	groupsLayer, err := MMMM.EnsureLayer("groups")
+	if err != nil {
+		return err
+	}
+
+	Log.Info().Msg("migrating events from groups layer to main")
+
+	filter := nostr.Filter{}
+	count := 0
+	for evt := range groupsLayer.QueryEvents(filter, 1_000_000) {
+		if err := IL.Main.SaveEvent(evt); err != nil && err != eventstore.ErrDupEvent {
+			Log.Warn().Err(err).Str("event_id", evt.ID.String()).Int("count", count).
+				Msg("failed to migrate event from groups")
+			panic(err)
+		} else {
+			count++
+		}
+	}
+
+	Log.Info().Int("count", count).Msg("migrated events from groups layer")
+
+	if err := MMMM.DropLayer("groups"); err != nil {
+		return fmt.Errorf("failed to drop groups layer: %w", err)
+	}
+
+	if err := os.Rename(groupsDir, groupsDir+".old"); err != nil {
+		Log.Warn().Err(err).Msg("failed to rename groups directory")
+	}
+
 	return nil
 }
 
@@ -138,12 +226,12 @@ var IL struct {
 	Main *mmm.IndexingLayer
 
 	// specific
-	Favorites *mmm.IndexingLayer
-	Internal  *mmm.IndexingLayer
-	Invites   *mmm.IndexingLayer
-	Personal  *mmm.IndexingLayer
-	Groups    *mmm.IndexingLayer
-	Inbox     *mmm.IndexingLayer
+	Favorites     *mmm.IndexingLayer
+	Internal      *mmm.IndexingLayer
+	Invites       *mmm.IndexingLayer
+	PendingAccess *mmm.IndexingLayer
+	Personal      *mmm.IndexingLayer
+	Inbox         *mmm.IndexingLayer
 
 	// only nip44-encrypted DMs for now
 	Secret *mmm.IndexingLayer
@@ -161,4 +249,7 @@ var IL struct {
 
 	// blossom blob index
 	Blossom *mmm.IndexingLayer
+
+	// operator registrations
+	OperatorBucket *mmm.IndexingLayer
 }

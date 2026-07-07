@@ -41,6 +41,7 @@ type UserSettings struct {
 	MaxInvitesAtEachLevel    []int  `json:"max_invites_at_each_level,omitempty"`
 	RequireCurrentTimestamp  bool   `json:"require_current_timestamp"`
 	AcceptScheduledEvents    bool   `json:"accept_scheduled_events"`
+	AllowAccessRequest       bool   `json:"allow_access_request"`
 	AllowEphemeralFromAnyone bool   `json:"allow_ephemeral_from_anyone"`
 	ValidateSchema           bool   `json:"validate_schema"`
 	Search                   struct {
@@ -111,12 +112,25 @@ type UserSettings struct {
 		Enabled                      bool  `json:"enabled"`
 		MaxUserUploadSize            int   `json:"max_user_upload_size,omitempty"` // in megabytes, 0 means unlimited
 		MaxUserUploadSizeAtEachLevel []int `json:"max_user_upload_size_at_each_level,omitempty"`
+		AllowGroupMembers            bool  `json:"allow_group_members,omitempty"`          // allow members of any nip-29 group to use blossom
+		MaxGroupMemberUploadSize     int   `json:"max_group_member_upload_size,omitempty"` // in megabytes, 0 means unlimited
 	} `json:"blossom"`
+
+	Nsite struct {
+		Enabled bool   `json:"enabled"`
+		Domain  string `json:"domain,omitempty"`
+	} `json:"nsite"`
 
 	Stream struct {
 		Enabled bool   `json:"enabled"`
+		Port    int    `json:"port,omitempty"`
 		Salt    string `json:"salt"`
 	} `json:"stream"`
+
+	Imgproxy struct {
+		Enabled    bool   `json:"enabled"`
+		BaseSecret string `json:"base_secret"`
+	} `json:"imgproxy"`
 
 	Popular struct {
 		RelayMetadata
@@ -137,6 +151,14 @@ type UserSettings struct {
 		Enabled  bool   `json:"enabled"`
 		Password string `json:"password"`
 	} `json:"ftp"`
+
+	Operator struct {
+		Enabled            bool   `json:"enabled"`
+		HTTPBasePath       string `json:"path"`
+		GoogleClientID     string `json:"google_client_id"`
+		GoogleClientSecret string `json:"google_client_secret"`
+		RegistrationFilter string `json:"registration_filter,omitempty"`
+	} `json:"operator"`
 }
 
 type Limits struct {
@@ -284,6 +306,7 @@ func loadUserSettings() error {
 		},
 		BlockedIPs:               []string{},
 		AcceptScheduledEvents:    true,
+		AllowAccessRequest:       true,
 		AllowEphemeralFromAnyone: true,
 	}
 	Settings.Search.Enable = false
@@ -304,12 +327,23 @@ func loadUserSettings() error {
 	Settings.Uppermost.HTTPBasePath = "uppermost"
 	Settings.Moderated.HTTPBasePath = "moderated"
 
+	// Blossom settings
+	Settings.Blossom.MaxGroupMemberUploadSize = 1
+
 	// FTP settings
 	Settings.FTP.Enabled = false
 	Settings.FTP.Password = ""
 
 	// Stream settings
 	Settings.Stream.Enabled = false
+	Settings.Stream.Port = 1935
+
+	// Operator settings
+	Settings.Operator.Enabled = false
+	Settings.Operator.HTTPBasePath = "po"
+
+	// Imgproxy settings
+	Settings.Imgproxy.Enabled = false
 
 	// theme defaults
 	Settings.Theme.TextColor = "#ffffff"
@@ -356,6 +390,12 @@ func loadUserSettings() error {
 
 	if err := json.Unmarshal(data, &Settings); err != nil {
 		return err
+	}
+	var loadedSettings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &loadedSettings); err == nil {
+		if _, ok := loadedSettings["allow_access_request"]; !ok {
+			Settings.AllowAccessRequest = true
+		}
 	}
 
 	if Settings.AllowedKindsSpec == "" && len(Settings.AllowedKindsLegacy) > 0 {
@@ -406,12 +446,18 @@ func SaveUserSettings() error {
 // this must be sorted, which we do on main()
 var SupportedKindsDefault = []nostr.Kind{
 	0, 1, 3, 5, 6, 7, 8, 9,
-	11, 16, 20, 21, 22, 24, 777, 818, 1040,
+	11, 16, 20, 21, 22, 24,
+	54,
+	777, 818, 1040,
 	1063, 1111, 1222, 1227, 1244, 1617, 1618, 1619, 1621,
-	1630, 1631, 1632, 1633, 1984, 1985, 7375, 7376,
+	1630, 1631, 1632, 1633, 1984, 1985,
+	4454, 4455,
+	7375, 7376,
 	9321, 9735, 9802, 10000, 10001, 10002, 10003, 10004,
-	10005, 10006, 10007, 10009, 10012, 10013, 10015, 10019, 10027, 10030, 10050,
-	10063, 10777, 10101, 10102, 10317, 15128, 17375,
+	10005, 10006, 10007, 10009, 10012, 10013, 10015, 10019, 10027, 10030, 10044, 10050, 10054, 10063, 10064,
+	10154,
+	10777, 10101, 10102, 10317, 15128, 17375,
+	16767,
 	23194, 23195, 24133,
 	30000, 30002, 30003, 30004, 30008, 30009, 30015, 30023, 30024, 30030,
 	30078, 30311, 30617, 30618, 30818, 30819, 31922, 31923,

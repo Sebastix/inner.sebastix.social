@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var LiveKitEmbedded bool
@@ -80,6 +82,16 @@ func startEmbeddedLiveKitHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/groups/", 302)
+}
+
+func livekitLogHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, ok := global.GetLoggedUser(r)
+	if !ok || !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	global.LogHandler(w, r, filepath.Join(global.S.DataPath, "livekit.log"))
 }
 
 type livekitRelease struct {
@@ -153,17 +165,19 @@ keys:
   '` + apiKey + `': '` + apiSecret + `'
 `
 
-	cmd := exec.Command("./"+embeddedLiveKitBinaryPath, "--config-body", config)
-	logFile, err := os.OpenFile(filepath.Join(global.S.DataPath, "livekit.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		embeddedLiveKit.error = err.Error()
-		return err
+	rotator := &lumberjack.Logger{
+		Filename:   filepath.Join(global.S.DataPath, "livekit.log"),
+		MaxSize:    10,
+		MaxBackups: 3,
+		MaxAge:     28,
+		Compress:   true,
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+
+	cmd := exec.Command("./"+embeddedLiveKitBinaryPath, "--config-body", config)
+	cmd.Stdout = rotator
+	cmd.Stderr = rotator
 
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
 		embeddedLiveKit.error = err.Error()
 		return err
 	}
@@ -171,7 +185,6 @@ keys:
 	exited := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
-		logFile.Close()
 
 		embeddedLiveKit.mu.Lock()
 		defer embeddedLiveKit.mu.Unlock()
@@ -217,6 +230,7 @@ keys:
 	embeddedLiveKit.running = true
 	embeddedLiveKit.version = release.TagName
 	embeddedLiveKit.error = ""
+	startEmbeddedLiveKitDNSChecker()
 	log.Info().Str("version", release.TagName).Int("pid", cmd.Process.Pid).Msg("started embedded livekit server")
 	return nil
 }
@@ -436,4 +450,74 @@ func ShutdownEmbeddedLiveKit() {
 	case <-ctx.Done():
 		log.Warn().Msg("timed out stopping embedded livekit during shutdown")
 	}
+}
+
+type dnsCheckResult struct {
+	mu       sync.RWMutex
+	status   string // "checking", "no_records", "wrong_ip", "ok"
+	serverIP string
+}
+
+var embeddedDNS = &dnsCheckResult{status: "checking"}
+
+func EmbeddedLiveKitDNSCheck() (status, serverIP string) {
+	embeddedDNS.mu.RLock()
+	defer embeddedDNS.mu.RUnlock()
+	return embeddedDNS.status, embeddedDNS.serverIP
+}
+
+func checkEmbeddedLiveKitDNS() {
+	domain := global.Settings.Domain
+	if domain == "" {
+		embeddedDNS.mu.Lock()
+		embeddedDNS.status = "checking"
+		embeddedDNS.serverIP = ""
+		embeddedDNS.mu.Unlock()
+		return
+	}
+
+	livekitHost := "livekit." + domain
+	turnHost := "turn." + domain
+
+	livekitIPs, errLK := net.LookupHost(livekitHost)
+	turnIPs, errTurn := net.LookupHost(turnHost)
+
+	embeddedDNS.mu.Lock()
+	defer embeddedDNS.mu.Unlock()
+
+	embeddedDNS.serverIP = global.PublicIP
+
+	if errLK != nil || errTurn != nil || (len(livekitIPs) == 0 && len(turnIPs) == 0) {
+		embeddedDNS.status = "no_records"
+		return
+	}
+
+	allIPs := append(livekitIPs, turnIPs...)
+	for _, ip := range allIPs {
+		if ip == global.PublicIP {
+			embeddedDNS.status = "ok"
+			return
+		}
+	}
+
+	embeddedDNS.status = "wrong_ip"
+}
+
+func startEmbeddedLiveKitDNSChecker() {
+	go func() {
+		for {
+			checkEmbeddedLiveKitDNS()
+
+			embeddedDNS.mu.RLock()
+			s := embeddedDNS.status
+			embeddedDNS.mu.RUnlock()
+
+			interval := 5 * time.Minute
+			if s == "ok" {
+				interval = 24 * time.Hour
+			}
+
+			time.Sleep(interval)
+		}
+	}()
 }

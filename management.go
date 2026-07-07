@@ -24,6 +24,9 @@ func allowPubKeyHandler(ctx context.Context, pubkey nostr.PubKey, reason string)
 
 	err := pyramid.AddAction("invite", caller, pubkey)
 	if err == nil {
+		if err := deletePendingAccessRequests(pubkey); err != nil {
+			log.Warn().Err(err).Str("pubkey", pubkey.Hex()).Msg("failed to delete pending access requests after management allowpubkey")
+		}
 		publishMembershipChange(pubkey, true)
 	}
 	return err
@@ -85,35 +88,32 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 		return fmt.Errorf("not authenticated")
 	}
 
-	// allow if caller is a root user
-	if pyramid.IsRoot(caller) {
-		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called by root")
-	} else {
-		// check if the caller is the author of the event being banned
-		var isAuthor bool
-		for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
-			if evt.PubKey == caller {
-				isAuthor = true
-				break
-			}
-		}
-		if !isAuthor {
-			return fmt.Errorf("must be a root user or the event author to ban an event")
-		}
-		log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called by author")
-	}
+	log.Info().Str("caller", caller.Hex()).Str("id", id.Hex()).Str("reason", reason).Msg("management banevent called")
 
-	var deleted nostr.Event
 	for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
-		deleted = evt
+		// only authors or root users can delete from main event
+		if evt.PubKey == caller || pyramid.IsRoot(caller) {
+			if err := deleteFromMain(id); err != nil {
+				return err
+			}
+			handleDeleted(ctx, evt)
+			return nil
+		}
 	}
 
-	if deleted.PubKey != nostr.ZeroPK {
-		if err := deleteFromMain(id); err != nil {
-			return err
+	// scheduled is like main
+	for evt := range global.IL.Scheduled.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+		if evt.PubKey == caller || pyramid.IsRoot(caller) {
+			return global.IL.Scheduled.DeleteEvent(id)
 		}
+	}
 
-		handleDeleted(ctx, deleted)
+	// also check pending access requests
+	for evt := range global.IL.PendingAccess.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+		// (in this case anyone can delete requests target at themselves)
+		if evt.PubKey == caller || evt.Tags.FindWithValue("p", caller.Hex()) != nil || pyramid.IsRoot(caller) {
+			return global.IL.PendingAccess.DeleteEvent(id)
+		}
 	}
 
 	return nil
@@ -130,7 +130,11 @@ func changeRelayNameHandler(ctx context.Context, name string) error {
 	log.Info().Str("caller", caller.Hex()).Str("name", name).Msg("management changerelayname called")
 
 	global.Settings.RelayName = name
-	return global.SaveUserSettings()
+	if err := global.SaveUserSettings(); err != nil {
+		return err
+	}
+	go publishRelayMetadata()
+	return nil
 }
 
 func changeRelayDescriptionHandler(ctx context.Context, description string) error {
@@ -144,7 +148,11 @@ func changeRelayDescriptionHandler(ctx context.Context, description string) erro
 	log.Info().Str("caller", caller.Hex()).Str("description", description).Msg("management changerelaydescription called")
 
 	global.Settings.RelayDescription = description
-	return global.SaveUserSettings()
+	if err := global.SaveUserSettings(); err != nil {
+		return err
+	}
+	go publishRelayMetadata()
+	return nil
 }
 
 func changeRelayIconHandler(ctx context.Context, icon string) error {
@@ -158,7 +166,11 @@ func changeRelayIconHandler(ctx context.Context, icon string) error {
 	log.Info().Str("caller", caller.Hex()).Str("icon", icon).Msg("management changerelayicon called")
 
 	global.Settings.RelayIcon = icon
-	return global.SaveUserSettings()
+	if err := global.SaveUserSettings(); err != nil {
+		return err
+	}
+	go publishRelayMetadata()
+	return nil
 }
 
 func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
@@ -196,6 +208,82 @@ func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	global.KindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
 
 	return global.SaveUserSettings()
+}
+
+func createRoleHandler(ctx context.Context, id, label, description string, color, order int) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+	if id == "" {
+		return fmt.Errorf("role id is required")
+	}
+	if _, exists := pyramid.Roles.Load(id); exists {
+		return fmt.Errorf("role '%s' already exists", id)
+	}
+	if color < 0 || color > 360 {
+		return fmt.Errorf("color must be between 0 and 360")
+	}
+	return pyramid.AddRoleAction(pyramid.ActionCreateRole, caller, id, label, description, strconv.Itoa(color), order)
+}
+
+func editRoleHandler(ctx context.Context, id, label, description string, color, order int) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+	if _, exists := pyramid.Roles.Load(id); !exists {
+		return fmt.Errorf("role '%s' does not exist", id)
+	}
+	if color < 0 || color > 360 {
+		return fmt.Errorf("color must be between 0 and 360")
+	}
+	return pyramid.AddRoleAction(pyramid.ActionEditRole, caller, id, label, description, strconv.Itoa(color), order)
+}
+
+func deleteRoleHandler(ctx context.Context, id string) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+	if _, exists := pyramid.Roles.Load(id); !exists {
+		return fmt.Errorf("role '%s' does not exist", id)
+	}
+	return pyramid.AddRoleAction(pyramid.ActionDeleteRole, caller, id, "", "", "", 0)
+}
+
+func assignRoleHandler(ctx context.Context, pubkey nostr.PubKey, roleID string) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+	if _, exists := pyramid.Roles.Load(roleID); !exists {
+		return fmt.Errorf("role '%s' does not exist", roleID)
+	}
+	if !pyramid.IsMember(pubkey) {
+		return fmt.Errorf("pubkey is not a member")
+	}
+	if pyramid.MemberHasRole(pubkey, roleID) {
+		return fmt.Errorf("member already has role '%s'", roleID)
+	}
+	return pyramid.AddRoleAssignmentAction(pyramid.ActionAssignRole, caller, pubkey, roleID)
+}
+
+func unassignRoleHandler(ctx context.Context, pubkey nostr.PubKey, roleID string) error {
+	caller, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("not authenticated")
+	}
+	if _, exists := pyramid.Roles.Load(roleID); !exists {
+		return fmt.Errorf("role '%s' does not exist", roleID)
+	}
+	if !pyramid.IsMember(pubkey) {
+		return fmt.Errorf("pubkey is not a member")
+	}
+	if !pyramid.MemberHasRole(pubkey, roleID) {
+		return fmt.Errorf("member does not have role '%s'", roleID)
+	}
+	return pyramid.AddRoleAssignmentAction(pyramid.ActionUnassignRole, caller, pubkey, roleID)
 }
 
 func listAllowedKindsHandler(ctx context.Context) ([]nostr.Kind, error) {

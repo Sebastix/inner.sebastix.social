@@ -12,18 +12,18 @@ import (
 	"fiatjaf.com/nostr/nip61"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"github.com/fiatjaf/pyramid/wot"
 )
 
 var (
 	secretKinds   = []nostr.Kind{1059}
-	aggregatedWoT WotXorFilter
-	wotComputed   = false
 	kindIsAllowed func(nostr.Kind) bool
 	allowedKinds  []nostr.Kind
 )
 
 var supportedKindsDefault = []nostr.Kind{
 	1, 6, 7, 11, 20, 21, 22, 9321, 9735, 1111, 1222, 1244, 9802, 30023, 30818,
+	4454, 4455,
 }
 
 func rejectFilter(ctx context.Context, filter nostr.Filter) (bool, string) {
@@ -182,7 +182,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 
 			for _, pk := range khatru.GetAllAuthed(ctx) {
 				// at least one authenticated pubkey is in the wot
-				if aggregatedWoT.Contains(pk) {
+				if wot.Current.Contains(pk) {
 					return false, ""
 				}
 			}
@@ -255,7 +255,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	}
 
 	// ensure this comes from someone in the relay combined extended network
-	if !aggregatedWoT.Contains(sender) {
+	if !wot.Current.Contains(sender) {
 		if evt.Kind == 9735 && sender == evt.PubKey {
 			// we'll make an exception for zap providers that do not include the "P" temporarily
 			return false, ""

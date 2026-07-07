@@ -1,0 +1,132 @@
+package main
+
+import (
+	"fmt"
+	"net/http"
+
+	"fiatjaf.com/nostr"
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/layout"
+	"github.com/fiatjaf/pyramid/pyramid"
+)
+
+func databaseBlocksHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, ok := global.GetLoggedUser(r)
+	if !ok || !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	databaseBlocksPage(loggedUser).Render(r.Context(), w)
+}
+
+func databaseBlocksDefragHandler(w http.ResponseWriter, r *http.Request) {
+	loggedUser, ok := global.GetLoggedUser(r)
+	if !ok || !pyramid.IsRoot(loggedUser) {
+		http.Error(w, "unauthorized", 403)
+		return
+	}
+
+	if err := global.MMMM.DefragmentOne(); err != nil {
+		global.Log.Error().Err(err).Msg("defragmentation error")
+		http.Error(w, "failed: "+err.Error(), 500)
+		return
+	}
+
+	justRows(1).Render(r.Context(), w)
+}
+
+templ justRows(limit int) {
+	{{ var prevEnd uint64 = 0 }}
+	{{ i := 0 }}
+	for start, size := range global.MMMM.AllFreeRanges() {
+		if i >= limit {
+			{{ break }}
+		}
+		{{ i++ }}
+		@databaseBlocksRowPair(start, size, prevEnd, true)
+		{{ prevEnd = start + uint64(size) }}
+	}
+}
+
+templ databaseBlocksPage(loggedUser nostr.PubKey) {
+	@layout.Layout(loggedUser, "database") {
+		<div class="max-w-6xl mx-auto space-y-6" x-data="{pristine: true}">
+			<div class="flex items-center justify-between gap-4">
+				@layout.SubSectionTitle("database blocks")
+			</div>
+			<p class="text-lg leading-relaxed">
+				overview of all memory-mapped file blocks, both free and occupied by events.
+			</p>
+			<div class="bg-white dark:bg-stone-800 rounded-lg border border-stone-200 dark:border-stone-700 overflow-x-auto">
+				{{ nfree := 0 }}
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="text-left text-stone-500 dark:text-stone-400 border-b border-stone-200 dark:border-stone-700">
+							<th class="px-4 py-3">type</th>
+							<th class="px-4 py-3">start</th>
+							<th class="px-4 py-3">end</th>
+							<th class="px-4 py-3">size</th>
+							<th class="px-4 py-3"></th>
+						</tr>
+					</thead>
+					<tbody>
+						{{ var prevEnd uint64 = 0 }}
+						{{ first := true }}
+						for start, size := range global.MMMM.AllFreeRanges() {
+							{{ nfree++ }}
+							@databaseBlocksRowPair(start, size, prevEnd, first)
+							{{ prevEnd = start + uint64(size) }}
+							{{ first = false }}
+						}
+					</tbody>
+				</table>
+			</div>
+			if nfree > 1 {
+				<div class="ml-4 text-sm" x-show="pristine">{ nfree } free blocks</div>
+			}
+		</div>
+	}
+}
+
+templ databaseBlocksRowPair(start uint64, size uint32, prevEnd uint64, showDefrag bool) {
+	if start > prevEnd {
+		<tr class="border-b border-stone-100 dark:border-stone-700">
+			<td class="px-4 py-3">
+				<span class="text-amber-600 dark:text-amber-400 font-medium">events</span>
+			</td>
+			<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", prevEnd) }</td>
+			<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", start) }</td>
+			<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", start - prevEnd) }</td>
+			<td class="px-4 py-3"></td>
+		</tr>
+	}
+	<tr class="border-b border-stone-100 dark:border-stone-700 last:[&_form]:hidden">
+		<td class="px-4 py-3">
+			<span class="text-green-600 dark:text-green-400 font-medium">free</span>
+		</td>
+		<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", start) }</td>
+		<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", start + uint64(size)) }</td>
+		<td class="px-4 py-3 font-mono">{ fmt.Sprintf("%d", size) }</td>
+		<td class="px-4 py-3">
+			if showDefrag {
+				<form
+					x-data
+					x-on:submit.prevent="
+					fetch('/database/blocks/defrag', { method:'POST' })
+						.then(r => r.ok ? r.text() : Promise.reject())
+						.then(html=> {
+							let t = $el.closest('tbody'), rs = t.querySelectorAll('tr')
+							for (let i = 0; i < 4 && i < rs.length; i++) rs[i].remove()
+							t.insertAdjacentHTML('afterbegin', html)
+                            pristine = false
+						})
+						.catch(() => {})
+				"
+				>
+					<button type="submit" class="cursor-pointer text-xs px-2 py-1 bg-stone-200 dark:bg-stone-700 rounded hover:bg-stone-300 dark:hover:bg-stone-60">defragment</button>
+				</form>
+			}
+		</td>
+	</tr>
+}

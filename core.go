@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"iter"
 	"slices"
@@ -11,11 +12,11 @@ import (
 	"unsafe"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/eventstore"
 	"fiatjaf.com/nostr/eventstore/mmm"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/nip29"
 	"fiatjaf.com/nostr/nip70"
+	"fiatjaf.com/nostr/sdk"
 	"github.com/mailru/easyjson"
 
 	"github.com/fiatjaf/pyramid/global"
@@ -117,13 +118,45 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 
 		return true, "invalid report"
 	case 28934:
-		// check join request
-		claim := event.Tags.Find("claim")
-		if claim == nil || len(claim) < 2 {
-			return true, "restricted: missing claim tag"
+		if pyramid.IsMember(event.PubKey) {
+			return false, "you are already a member of this relay, but fine"
 		}
 
-		invite, err := fetchInviteByClaim(claim[1])
+		claim := event.Tags.Find("claim")
+		if claim == nil {
+			if !global.Settings.AllowAccessRequest {
+				return true, "restricted: missing invite code"
+			}
+
+			// validate access requests made from the homepage
+			p := event.Tags.Find("p")
+			if p == nil {
+				return true, "restricted: missing pubkey target"
+			}
+
+			target, err := nostr.PubKeyFromHex(p[1])
+			if err != nil {
+				return true, "restricted: invalid pubkey target"
+			}
+
+			if !pyramid.IsMember(target) {
+				return true, "restricted: pubkey target is not a member"
+			}
+
+			remainingInvites := pyramid.GetMaxInvitesFor(target) - pyramid.GetInviteCount(target)
+			pendingAccessRequests, err := global.IL.PendingAccess.CountEvents(nostr.Filter{Tags: nostr.TagMap{"p": []string{target.Hex()}}})
+			if err != nil {
+				return true, "error: failed to count pending access requests for target"
+			}
+			if int(pendingAccessRequests) >= remainingInvites*2 {
+				return true, "restricted: target member has too many pending access requests"
+			}
+
+			// this is an access request targeted at some member
+			return false, ""
+		}
+
+		invite, err := fetchInvite(claim[1])
 		if err != nil {
 			return true, err.Error()
 		}
@@ -137,9 +170,6 @@ func basicRejectionLogic(ctx context.Context, event nostr.Event) (reject bool, m
 		}
 
 		// check if this person can still join
-		if pyramid.IsMember(event.PubKey) {
-			return true, "restricted: you are already a member of this relay"
-		}
 		if !pyramid.CanInviteMore(parent) {
 			return true, "restricted: end of inviter quota"
 		}
@@ -195,118 +225,11 @@ func rejectInviteRequestsNonAuthed(ctx context.Context, filter nostr.Filter) (bo
 	return false, ""
 }
 
-// does a normal query unless paywall settings are configured.
-// if paywall settings are configured it stops at each paywalled event (events with the
-// "-" plus the specific paywall "t" tag) to check if the querier is eligible for reading.
-func queryMain(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
-	if filter.Search != "" && global.Settings.Search.Enable {
-		return search.Main.QueryEvents(filter, 40)
-	}
-
-	return func(yield func(nostr.Event) bool) {
-		// try to get a pinned note first
-		if global.PinnedCache.Main != nil &&
-			filter.IDs == nil && filter.Tags == nil && filter.Authors == nil &&
-			filter.Until == 0 && filter.Since < global.PinnedCache.Main.CreatedAt {
-			// display pinned in this case
-			if y, ok := global.PreparedPinned(global.PinnedCache.Main, filter); ok {
-				if !yield(y) {
-					return
-				}
-				if filter.Limit > 0 {
-					// we've used one limit
-					filter.Limit--
-				}
-			}
-		}
-
-		// handle special invite requests
-		if idx := slices.Index(filter.Kinds, 28935); idx != -1 {
-			if authed, ok := khatru.GetAuthed(ctx); ok && pyramid.CanInviteMore(authed) {
-				// generate invite codes for members if authenticated
-				inviteCodeBytes := make([]byte, 16)
-				if _, err := rand.Read(inviteCodeBytes); err != nil {
-					log.Error().Err(err).Msg("failed to generate invite code")
-					return
-				}
-				inviteCode := hex.EncodeToString(inviteCodeBytes)
-				expiration := nostr.Now() + 60*60*24*3
-
-				// generate the event containing the invite code
-				evt := nostr.Event{
-					Kind:      28935,
-					PubKey:    global.Settings.RelayInternalSecretKey.Public(),
-					CreatedAt: nostr.Now(),
-					Tags: nostr.Tags{
-						{"-"},
-						{"claim", inviteCode},
-						{"p", authed.Hex()},
-						{"expiration", strconv.FormatInt(int64(expiration), 10)},
-					},
-				}
-				evt.Sign(global.Settings.RelayInternalSecretKey)
-				if err := global.IL.Invites.SaveEvent(evt); err != nil {
-					log.Error().Err(err).Msg("failed to store invite code")
-					return
-				}
-				if !yield(evt) {
-					return
-				}
-
-				// don't query stored events for this kind (swap-remove)
-				filter.Kinds[idx] = filter.Kinds[len(filter.Kinds)-1]
-				filter.Kinds = filter.Kinds[0 : len(filter.Kinds)-1]
-				if len(filter.Kinds) == 0 {
-					// if the only kind requests was this, end here
-					return
-				}
-			}
-		}
-
-		// normal query
-		if global.Settings.Paywall.Enabled {
-			// use this special query that filters content for paying visitors
-			authed := khatru.GetAllAuthed(ctx)
-
-			for evt := range global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
-				if evt.Tags.Has("nip63") {
-					// this is a paywalled event, check if reader can read
-					for _, pk := range authed {
-						if paywall.CanRead(evt.PubKey, pk) {
-							if !yield(evt) {
-								return
-							}
-							break
-						}
-					}
-				} else if evt.Kind == 1163 {
-					// hide paywall reader lists except from their author
-					if khatru.IsAuthed(ctx, evt.PubKey) {
-						if !yield(evt) {
-							return
-						}
-					}
-				} else {
-					// not paywalled, anyone can read
-					if !yield(evt) {
-						return
-					}
-				}
-			}
-		} else {
-			// otherwise do a normal query
-			for evt := range global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
-				if !yield(evt) {
-					return
-				}
-			}
-		}
-	}
-}
-
 func onConnect(ctx context.Context) {
-	// if there is a paywall give the reader the option to auth
-	if global.Settings.Paywall.Enabled {
+	// give the reader the option to auth: with a paywall it gates reads, and with
+	// groups it lets admins/members see their hidden groups in broad listings (a
+	// broad metadata query never triggers auth-required on its own)
+	if global.Settings.Paywall.Enabled || global.Settings.Groups.Enabled {
 		khatru.RequestAuth(ctx)
 	}
 }
@@ -350,13 +273,16 @@ func preventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Eve
 }
 
 func processJoinRequest(ctx context.Context, event nostr.Event) {
-	// here we know the event is already validated
 	claim := event.Tags.Find("claim")
 	if claim == nil || len(claim) < 2 {
-		log.Warn().Stringer("event", event).Msg("missing claim tag in join request")
+		if err := global.IL.PendingAccess.SaveEvent(event); err != nil {
+			log.Warn().Err(err).Stringer("event", event).Msg("failed to store pending access request")
+		}
 		return
 	}
-	invite, err := fetchInviteByClaim(claim[1])
+
+	// here we know invite-backed join request is already validated
+	invite, err := fetchInvite(claim[1])
 	if err != nil {
 		log.Warn().Err(err).Stringer("event", event).Msg("invite not found when processing join request")
 		return
@@ -376,6 +302,10 @@ func processJoinRequest(ctx context.Context, event nostr.Event) {
 		log.Warn().Err(err).Str("parent", parent.Hex()).Str("child", event.PubKey.Hex()).Stringer("event", event).
 			Msg("failed to add from join request")
 		return
+	}
+	if err := deletePendingAccessRequests(event.PubKey); err != nil {
+		log.Warn().Err(err).Str("child", event.PubKey.Hex()).Stringer("event", event).
+			Msg("failed to delete pending access requests after acceptance")
 	}
 	if err := global.IL.Invites.DeleteEvent(invite.ID); err != nil {
 		log.Warn().Err(err).Stringer("event", event).Msg("failed to delete invite after acceptance")
@@ -440,8 +370,12 @@ func publishMembershipChange(pubkey nostr.PubKey, added bool) {
 			CreatedAt: nostr.Now(),
 			Tags:      nostr.Tags{{"-"}},
 		}
-		for m := range pyramid.Members.Range {
-			relayMembersList.Tags = append(relayMembersList.Tags, nostr.Tag{"member", m.Hex()})
+		for m, member := range pyramid.Members.Range {
+			memberTag := nostr.Tag{"member", m.Hex()}
+			for _, rid := range member.Roles {
+				memberTag = append(memberTag, rid)
+			}
+			relayMembersList.Tags = append(relayMembersList.Tags, memberTag)
 			roomCreationPermissionList.Tags = append(roomCreationPermissionList.Tags, nostr.Tag{"p", m.Hex()})
 		}
 		relayMembersList.Sign(global.Settings.RelayInternalSecretKey)
@@ -453,7 +387,7 @@ func publishMembershipChange(pubkey nostr.PubKey, added bool) {
 	}
 }
 
-func fetchInviteByClaim(claim string) (nostr.Event, error) {
+func fetchInvite(claim string) (nostr.Event, error) {
 	filter := nostr.Filter{
 		Kinds: []nostr.Kind{28935},
 		Tags:  nostr.TagMap{"claim": []string{claim}},
@@ -495,6 +429,15 @@ func cleanupExpiredInvites() (int, error) {
 		}
 	}
 	return deleted, nil
+}
+
+func deletePendingAccessRequests(pubkey nostr.PubKey) error {
+	for evt := range global.IL.PendingAccess.QueryEvents(nostr.Filter{Authors: []nostr.PubKey{pubkey}}, 10_000) {
+		if err := global.IL.PendingAccess.DeleteEvent(evt.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func deleteFromMain(id nostr.ID) error {
@@ -545,82 +488,116 @@ func replaceOnMain(event nostr.Event) ([]nostr.Event, error) {
 	}
 }
 
-// splits the query between the main relay and the groups relay
 func queryStored(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
-	// if groups is disabled just query main directly
-	if !global.Settings.Groups.Enabled {
-		return queryMain(ctx, filter)
-	}
-
-	// otherwise we have to perform some convoluted routing between groups and normal
-	if filter.IDs != nil {
-		// query both normal and groups
-		return eventstore.SortedMerge(
-			queryNormal(ctx, filter),
-			groups.Query(ctx, filter),
-			filter.GetTheoreticalLimit(),
-		)
-	}
-
-	if filter.Kinds == nil {
-		// only normal kinds or no kinds specified
-		return queryNormal(ctx, filter)
-	}
-
-	if len(filter.Tags["h"]) > 0 {
-		return groups.Query(ctx, filter)
-	}
-
-	groupsFilter := filter
-	groupsFilter.Kinds = nil
-	normalFilter := filter
-	normalFilter.Kinds = nil
-	for _, kind := range filter.Kinds {
-		if slices.Contains(nip29.MetadataEventKinds, kind) {
-			groupsFilter.Kinds = append(groupsFilter.Kinds, kind)
-		} else {
-			normalFilter.Kinds = append(normalFilter.Kinds, kind)
+	if filter.Search != "" && global.Settings.Search.Enable {
+		if global.Settings.Groups.Enabled && len(filter.Tags["h"]) > 0 {
+			return groups.QuerySearch(ctx, filter)
 		}
+		return search.Main.QueryEvents(filter, 40)
 	}
 
-	if groupsFilter.Kinds != nil && normalFilter.Kinds != nil {
-		// mixed kinds - need to split the filter and query both
-		return eventstore.SortedMerge(
-			queryNormal(ctx, normalFilter),
-			groups.Query(ctx, groupsFilter),
-			filter.GetTheoreticalLimit(),
-		)
-	} else if groupsFilter.Kinds != nil && normalFilter.Kinds == nil {
-		// only groups kinds requested
-		return groups.Query(ctx, filter)
-	} else {
-		// only normal kinds requested
-		return queryNormal(ctx, filter)
-	}
-}
+	return func(yield func(nostr.Event) bool) {
+		// try to get a pinned note first
+		if global.PinnedCache.Main != nil &&
+			filter.IDs == nil && filter.Tags == nil && filter.Authors == nil &&
+			filter.Until == 0 && filter.Since < global.PinnedCache.Main.CreatedAt {
+			// display pinned in this case
+			if y, ok := global.PreparedPinned(global.PinnedCache.Main, filter); ok {
+				if !yield(y) {
+					return
+				}
+				if filter.Limit > 0 {
+					// we've used one limit
+					filter.Limit--
+				}
+			}
+		}
 
-func queryNormal(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
-	// if the query includes ids or common references we'll pass it to the groups db too
-	checkGroupsDB := false
-	if filter.IDs != nil {
-		checkGroupsDB = true
-	} else {
-		for _, tagName := range []string{"e", "E", "a", "A"} {
-			if _, ok := filter.Tags[tagName]; ok {
-				checkGroupsDB = true
+		// handle special invite requests
+		if idx := slices.Index(filter.Kinds, 28935); idx != -1 {
+			if authed, ok := khatru.GetAuthed(ctx); ok && pyramid.CanInviteMore(authed) {
+				// generate invite codes for members if authenticated
+				inviteCodeBytes := make([]byte, 16)
+				if _, err := rand.Read(inviteCodeBytes); err != nil {
+					log.Error().Err(err).Msg("failed to generate invite code")
+					return
+				}
+				inviteCode := hex.EncodeToString(inviteCodeBytes)
+				expiration := nostr.Now() + 60*60*24*3
+
+				// generate the event containing the invite code
+				evt := nostr.Event{
+					Kind:      28935,
+					PubKey:    global.Settings.RelayInternalSecretKey.Public(),
+					CreatedAt: nostr.Now(),
+					Tags: nostr.Tags{
+						{"-"},
+						{"claim", inviteCode},
+						{"p", authed.Hex()},
+						{"expiration", strconv.FormatInt(int64(expiration), 10)},
+					},
+				}
+				evt.Sign(global.Settings.RelayInternalSecretKey)
+				if err := global.IL.Invites.SaveEvent(evt); err != nil {
+					log.Error().Err(err).Msg("failed to store invite code")
+					return
+				}
+				if !yield(evt) {
+					return
+				}
+
+				// don't query stored events for this kind (swap-remove)
+				filter.Kinds[idx] = filter.Kinds[len(filter.Kinds)-1]
+				filter.Kinds = filter.Kinds[0 : len(filter.Kinds)-1]
+				if len(filter.Kinds) == 0 {
+					// if the only kind requests was this, end here
+					return
+				}
+			}
+		}
+
+		// normal query
+		query := global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit)
+		query = groups.FilterQuery(ctx, filter, query)
+
+		if global.Settings.Paywall.Enabled {
+			// use this special query that filters content for paying visitors
+			authed := khatru.GetAllAuthed(ctx)
+
+			for evt := range query {
+				if evt.Tags.Has("nip63") {
+					// this is a paywalled event, check if reader can read
+					for _, pk := range authed {
+						if paywall.CanRead(evt.PubKey, pk) {
+							if !yield(evt) {
+								return
+							}
+							break
+						}
+					}
+				} else if evt.Kind == 1163 {
+					// hide paywall reader lists except from their author
+					if khatru.IsAuthed(ctx, evt.PubKey) {
+						if !yield(evt) {
+							return
+						}
+					}
+				} else {
+					// not paywalled, anyone can read
+					if !yield(evt) {
+						return
+					}
+				}
+			}
+		} else {
+			// otherwise do a normal query
+			for evt := range query {
+				if !yield(evt) {
+					return
+				}
 			}
 		}
 	}
-	if checkGroupsDB {
-		return eventstore.SortedMerge(
-			groups.Query(ctx, filter),
-			queryMain(ctx, filter),
-			filter.GetTheoreticalLimit(),
-		)
-	}
-
-	// otherwise only query the main db
-	return queryMain(ctx, filter)
 }
 
 func handleDeleted(ctx context.Context, deleted nostr.Event) {
@@ -638,4 +615,31 @@ func handleDeleted(ctx context.Context, deleted nostr.Event) {
 			paywall.RecomputeMemberPaywall(ctx, by)
 		}
 	}
+}
+
+func publishRelayMetadata() {
+	content, _ := json.Marshal(sdk.ProfileMetadata{
+		Name:        "relay: " + global.Settings.Domain,
+		DisplayName: global.Settings.RelayName,
+		About:       global.Settings.RelayDescription,
+		Picture:     global.Settings.RelayIcon,
+		Website:     global.Settings.HTTPScheme() + global.Settings.Domain,
+	})
+
+	evt := nostr.Event{
+		Kind:      0,
+		PubKey:    global.Settings.RelayInternalSecretKey.Public(),
+		CreatedAt: nostr.Now(),
+		Content:   string(content),
+		Tags: nostr.Tags{
+			{"-"},
+		},
+	}
+	evt.Sign(global.Settings.RelayInternalSecretKey)
+
+	global.IL.Main.ReplaceEvent(evt)
+	global.IL.System.ReplaceEvent(evt)
+	relay.BroadcastEvent(evt)
+
+	return
 }

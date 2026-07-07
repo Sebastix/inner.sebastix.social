@@ -13,9 +13,11 @@ import (
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/policies"
 	"fiatjaf.com/nostr/nip11"
+	"fiatjaf.com/nostr/nip45/hyperloglog"
 
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"github.com/fiatjaf/pyramid/wot"
 )
 
 var (
@@ -98,6 +100,15 @@ func setupEnabled() {
 	Relay.Count = func(ctx context.Context, filter nostr.Filter) (uint32, error) {
 		return global.IL.Inbox.CountEvents(filter)
 	}
+	Relay.CountHLL = func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error) {
+		hll := hyperloglog.New(offset)
+		count := uint32(0)
+		for evt := range global.IL.Inbox.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
+			hll.Add(evt.PubKey)
+			count++
+		}
+		return count, hll, nil
+	}
 	Relay.StoreEvent = func(ctx context.Context, event nostr.Event) error {
 		if slices.Contains(secretKinds, event.Kind) {
 			return global.IL.Secret.SaveEvent(event)
@@ -167,21 +178,8 @@ func setupEnabled() {
 	mux.HandleFunc("POST /"+global.Settings.Inbox.HTTPBasePath+"/check-wot", checkWoTHandler)
 	Relay.SetRouter(mux)
 
-	// compute aggregated WoT in background every 48h
-	go func() {
-		ctx := context.Background()
-		time.Sleep(time.Minute * 2)
-		for {
-			wot, err := computeAggregatedWoT(ctx)
-			if err != nil {
-				nostr.InfoLogger.Println("failed to compute aggregated WoT:", err)
-			}
-			aggregatedWoT = wot
-			wotComputed = true
-			nostr.InfoLogger.Printf("computed aggregated WoT with %d entries", wot.Items)
-			time.Sleep(48 * time.Hour)
-		}
-	}()
+	// aggregated WoT is computed globally by wot.StartBackgroundComputation()
+	// started from main.go
 }
 
 func enableHandler(w http.ResponseWriter, r *http.Request) {
@@ -238,5 +236,5 @@ func checkWoTHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, "%v", aggregatedWoT.Contains(pk))
+	fmt.Fprintf(w, "%v", wot.Current.Contains(pk))
 }

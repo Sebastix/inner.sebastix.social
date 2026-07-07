@@ -6,22 +6,35 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/pyramid"
 )
 
-func Query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
+//go:inline
+func FilterQuery(ctx context.Context, filter nostr.Filter, query iter.Seq[nostr.Event]) iter.Seq[nostr.Event] {
+	// when a group is explicitly requested, request policy already checked access.
+	if len(filter.Tags["h"]) > 0 {
+		if global.Settings.Groups.Enabled && State != nil {
+			return query
+		} else {
+			return func(yield func(nostr.Event) bool) {}
+		}
+	}
+
 	return func(yield func(nostr.Event) bool) {
 		authed := khatru.GetAllAuthed(ctx)
 
-		var query iter.Seq[nostr.Event]
-		if filter.Search == "" {
-			query = State.DB.QueryEvents(filter, 1500)
-		} else {
-			query = queryGroupSearch(filter)
-		}
-
 		for evt := range query {
-			if hideEventFromReader(filter, evt, authed) {
-				continue
+			group := State.GetGroupFromEvent(evt)
+
+			if group != nil {
+				if !global.Settings.Groups.Enabled || State == nil {
+					continue
+				}
+
+				if hideEventFromReader(group, filter, evt, authed) {
+					continue
+				}
 			}
 
 			if !yield(evt) {
@@ -31,20 +44,27 @@ func Query(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
 	}
 }
 
-func ShouldPreventBroadcast(evt nostr.Event, filter nostr.Filter, authed []nostr.PubKey) bool {
-	return hideEventFromReader(filter, evt, authed)
-}
-
 //go:inline
-func hideEventFromReader(filter nostr.Filter, evt nostr.Event, authed []nostr.PubKey) bool {
+func ShouldPreventBroadcast(evt nostr.Event, filter nostr.Filter, authed []nostr.PubKey) bool {
 	group := State.GetGroupFromEvent(evt)
 	if nil == group {
 		return true
 	}
 
+	return hideEventFromReader(group, filter, evt, authed)
+}
+
+//go:inline
+func hideEventFromReader(group *Group, filter nostr.Filter, evt nostr.Event, authed []nostr.PubKey) bool {
+	// the group's own members (which includes its admins) and relay admins are
+	// allowed to discover and read a hidden group's metadata
+	if group.AnyOfTheseIsAMember(authed) || anyIsRelayRoot(authed) {
+		return false
+	}
+
 	if group.Hidden {
 		// 'hidden' works only by hiding the group from abrangent queries like listing all groups in a relay etc
-		if requestedGroupIds(filter) == nil {
+		if requestedGroupIds(filter) == nil && filter.IDs == nil {
 			return true
 		}
 
@@ -58,24 +78,26 @@ func hideEventFromReader(filter nostr.Filter, evt nostr.Event, authed []nostr.Pu
 		// group metadata is still public -- UNLESS the group is also marked as hidden, that's a special case
 		if evt.Kind == nostr.KindSimpleGroupMetadata {
 			if group.Hidden {
-				// still allow reading for members only
-				if group.AnyOfTheseIsAMember(authed) {
-					return false
-				}
-
 				return true
 			} else {
-				// metadata is allowed
-				// <pass>
-			}
-		} else {
-			// allow reading for members only
-			if group.AnyOfTheseIsAMember(authed) {
+				// metadata from private groups can be read
 				return false
 			}
+		} else {
+			return true
 		}
 	}
 
+	return false
+}
+
+//go:inline
+func anyIsRelayRoot(authed []nostr.PubKey) bool {
+	for _, pk := range authed {
+		if pyramid.IsRoot(pk) {
+			return true
+		}
+	}
 	return false
 }
 

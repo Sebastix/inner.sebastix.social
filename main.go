@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"embed"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"net"
@@ -21,7 +22,7 @@ import (
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/policies"
 	"fiatjaf.com/nostr/nip11"
-	"fiatjaf.com/nostr/nip29"
+	"fiatjaf.com/nostr/nip45/hyperloglog"
 	"fiatjaf.com/nostr/sdk"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/sync/errgroup"
@@ -32,9 +33,12 @@ import (
 	"github.com/fiatjaf/pyramid/global/relays"
 	"github.com/fiatjaf/pyramid/grasp"
 	"github.com/fiatjaf/pyramid/groups"
+	"github.com/fiatjaf/pyramid/imgproxy"
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/nsite"
+	"github.com/fiatjaf/pyramid/operator"
 	"github.com/fiatjaf/pyramid/paywall"
 	"github.com/fiatjaf/pyramid/personal"
 	"github.com/fiatjaf/pyramid/popular"
@@ -42,29 +46,38 @@ import (
 	"github.com/fiatjaf/pyramid/search"
 	"github.com/fiatjaf/pyramid/stream"
 	"github.com/fiatjaf/pyramid/uppermost"
+	"github.com/fiatjaf/pyramid/wot"
+	"github.com/rs/cors"
+	"github.com/rs/zerolog"
 )
 
 var (
 	relay *khatru.Relay
-	log   = global.Log
+	log   zerolog.Logger
 )
 
 //go:embed static/*
 var static embed.FS
 
 func main() {
-	log.Info().Str("version", currentVersion).Msg("running pyramid")
-
 	if err := global.Init(); err != nil {
-		log.Fatal().Err(err).Msg("couldn't initialize")
+		fmt.Fprintf(os.Stderr, "couldn't initialize: %s\n", err)
+		os.Exit(7)
 		return
 	}
+
+	log = global.Log
+	log.Info().Str("version", currentVersion).Msg("running pyramid")
+
+	pyramid.AbsoluteKey = global.Settings.RelayInternalSecretKey.Public()
+
 	if global.Settings.Search.Enable {
 		if err := search.Init(); err != nil {
 			log.Fatal().Err(err).Msg("couldn't initialize search")
 			return
 		}
 	}
+
 	if global.Settings.ValidateSchema {
 		if err := setSchemaValidator(true); err != nil {
 			log.Error().Err(err).Msg("failed to load schema validator")
@@ -100,8 +113,6 @@ func main() {
 		}
 	}()
 
-	pyramid.AbsoluteKey = global.Settings.RelayInternalSecretKey.Public()
-
 	if err := pyramid.LoadManagement(); err != nil {
 		log.Fatal().Err(err).Msg("failed to load members")
 		return
@@ -132,15 +143,19 @@ func main() {
 	// init basic http routes
 	relay.Router().HandleFunc("/action", actionHandler)
 	relay.Router().HandleFunc("/settings", settingsHandler)
-	relay.Router().HandleFunc("/clients", detailsHandler)
-	relay.Router().HandleFunc("/clients/{clientId}", clientDetailsHandler)
-	relay.Router().HandleFunc("/database", databaseHandler)
-	relay.Router().HandleFunc("/log", logHandler)
+	relay.Router().HandleFunc("GET /clients", detailsHandler)
+	relay.Router().HandleFunc("GET /clients/{clientId}", clientDetailsHandler)
+	relay.Router().HandleFunc("GET /event/{db}/{id}", databaseEventJSONHandler)
+	relay.Router().HandleFunc("DELETE /database/{db}/{id}", deleteDatabaseEventHandler)
+	relay.Router().HandleFunc("GET /database", databaseHandler)
+	relay.Router().HandleFunc("GET /database/blocks", databaseBlocksHandler)
+	relay.Router().HandleFunc("POST /database/blocks/defrag", databaseBlocksDefragHandler)
+	relay.Router().HandleFunc("GET /log", logHandler)
 	relay.Router().HandleFunc("/search/reindex", search.StreamingReindexHTML)
-	relay.Router().HandleFunc("/u", memberPageHandler)
-	relay.Router().HandleFunc("/u/{pubkey}", memberPageHandler)
-	relay.Router().HandleFunc("/u/sync", syncHandler)
-	relay.Router().HandleFunc("/stats", statsHandler)
+	relay.Router().HandleFunc("GET /u", memberPageHandler)
+	relay.Router().HandleFunc("GET /u/{pubkey}", memberPageHandler)
+	relay.Router().HandleFunc("GET /u/sync", syncHandler)
+	relay.Router().HandleFunc("GET /stats", statsHandler)
 	relay.Router().HandleFunc("/update", updateHandler)
 	relay.Router().HandleFunc("/restart", restartHandler)
 	relay.Router().HandleFunc("/icon/{relayId}", iconHandler)
@@ -162,8 +177,14 @@ func main() {
 	blossom.Init(relay)
 	paywall.Init(relay)
 	stream.Init(relay)
+	operator.Init(relay)
+	imgproxy.Init()
 	favorites.Init()
 	inbox.Init()
+	nsite.Init()
+
+	// start background web-of-trust computation (needed by inbox and operator)
+	wot.StartBackgroundComputation()
 	internal.Init()
 	personal.Init()
 	moderated.Init()
@@ -178,11 +199,17 @@ func main() {
 		// ignore groups in this case for now
 		return global.IL.Main.CountEvents(filter)
 	}
+	relay.CountHLL = func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error) {
+		hll := hyperloglog.New(offset)
+		count := uint32(0)
+		for evt := range global.IL.Main.QueryEvents(filter, global.Settings.Limits.MaxQueryLimit) {
+			hll.Add(evt.PubKey)
+			count++
+		}
+		return count, hll, nil
+	}
 	relay.StoreEvent = func(ctx context.Context, event nostr.Event) error {
-		if event.Tags.Find("h") != nil {
-			// nip29 logic
-			return global.IL.Groups.SaveEvent(event)
-		} else if global.Settings.AcceptScheduledEvents && event.CreatedAt > nostr.Now()+60 {
+		if global.Settings.AcceptScheduledEvents && event.CreatedAt > nostr.Now()+60 {
 			// future scheduled events
 			scheduled.BroadcastEvent(event)
 			return global.IL.Scheduled.SaveEvent(event)
@@ -192,27 +219,21 @@ func main() {
 		}
 	}
 	relay.ReplaceEvent = func(ctx context.Context, event nostr.Event) error {
-		var err error
-		if event.Tags.Find("h") != nil {
-			// nip29 logic
-			_, err = global.IL.Groups.ReplaceEvent(event)
-		} else {
-			// normal logic
-			_, err = replaceOnMain(event)
-		}
+		_, err := replaceOnMain(event)
 		return err
 	}
 	relay.DeleteEvent = func(ctx context.Context, id nostr.ID) error {
-		// try to delete from everywhere
-		if err := deleteFromMain(id); err != nil {
-			return err
-		}
-		for evt := range global.IL.Groups.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+		for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+			if evt.Tags.Find("h") == nil {
+				continue
+			}
 			if evt.CreatedAt < nostr.Now()-60*60*2 /* 2 hours */ {
 				return errors.New("can't delete very old group message")
 			}
 		}
-		if err := global.IL.Groups.DeleteEvent(id); err != nil {
+
+		// try to delete from everywhere
+		if err := deleteFromMain(id); err != nil {
 			return err
 		}
 		if err := global.IL.Scheduled.DeleteEvent(id); err != nil {
@@ -256,17 +277,6 @@ func main() {
 				}
 			}
 
-			for _, nip29k := range nip29.MetadataEventKinds {
-				if idx := slices.Index(filter.Kinds, nip29k); idx != -1 {
-					// nip29 logic
-					if global.Settings.Groups.Enabled {
-						return groups.RequestAuthWhenNecessary(ctx, filter)
-					} else {
-						return true, "groups are disabled"
-					}
-				}
-			}
-
 			// normal logic
 			return rejectInviteRequestsNonAuthed(ctx, filter)
 		},
@@ -280,7 +290,10 @@ func main() {
 		if event.Kind == nostr.KindDeletion {
 			for e := range event.Tags.FindAll("e") {
 				if eid, err := nostr.IDFromHex(e[1]); err == nil {
-					for evt := range global.IL.Groups.QueryEvents(nostr.Filter{IDs: []nostr.ID{eid}}, 1) {
+					for evt := range global.IL.Main.QueryEvents(nostr.Filter{IDs: []nostr.ID{eid}}, 1) {
+						if evt.Tags.Find("h") == nil {
+							continue
+						}
 						if evt.CreatedAt < nostr.Now()-60*60*2 /* 2 hours */ {
 							return true, "can't delete very old group message"
 						}
@@ -321,7 +334,7 @@ func main() {
 		case 6, 7, 9321, 9735, 9802, 1, 1111, 1244:
 			processReactions(ctx, event)
 		case 0, 3, 10019:
-			global.IL.System.SaveEvent(event)
+			global.IL.System.ReplaceEvent(event)
 		case 1163:
 			// NIP-63 paywall event - already handled in basicRejectionLogic
 			// recompute user paywall to ensure consistency
@@ -364,6 +377,11 @@ func main() {
 	relay.ManagementAPI.ListBlockedIPs = listBlockedIPsHandler
 	relay.ManagementAPI.BlockIP = blockIPHandler
 	relay.ManagementAPI.UnblockIP = unblockIPHandler
+	relay.ManagementAPI.CreateRole = createRoleHandler
+	relay.ManagementAPI.EditRole = editRoleHandler
+	relay.ManagementAPI.DeleteRole = deleteRoleHandler
+	relay.ManagementAPI.AssignRole = assignRoleHandler
+	relay.ManagementAPI.UnassignRole = unassignRoleHandler
 	relay.OverwriteRelayInformation = func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
 		// prevent flotilla from doing its negentropy here as it is incompatible with our groups approach
 		if strings.Contains(r.Header.Get("User-Agent"), "aiohttp") || strings.Contains(r.Referer(), "flotilla") {
@@ -441,7 +459,6 @@ func start() {
 		ctx, cancelStartContext = context.WithCancelCause(context.Background())
 
 		ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-
 		err := run(ctx)
 		cause := context.Cause(ctx)
 		cancel()
@@ -483,6 +500,9 @@ func run(ctx context.Context) error {
 	mux.Handle("/stream/", stream.Handler)
 	mux.Handle("/stream", stream.Handler)
 
+	mux.Handle("/imgproxy/", imgproxy.Handler)
+	mux.Handle("/imgproxy", imgproxy.Handler)
+
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath+"/", inbox.Relay)
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath, inbox.Relay)
 
@@ -498,10 +518,17 @@ func run(ctx context.Context) error {
 	mux.Handle("/paywall/", paywall.Handler)
 	mux.Handle("/paywall", paywall.Handler)
 
+	mux.Handle("/nsite/", nsite.Handler)
+	mux.Handle("/nsite", nsite.Handler)
+
+	mux.Handle("/po/", cors.AllowAll().Handler(operator.Handler))
+	mux.Handle("/po", cors.AllowAll().Handler(operator.Handler))
+
 	mux.Handle("/scheduled/", scheduled)
 	mux.Handle("/scheduled", scheduled)
 
 	mux.Handle("/", relay)
+
 	mainHandler := setupCheckMiddleware(mux)
 	externalHandler := ipBlockMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := strings.TrimSpace(r.Host)
@@ -513,6 +540,12 @@ func run(ctx context.Context) error {
 		// proxy to livekit server via subdomain
 		if groups.EmbeddedLiveKitAvailable() && host == strings.ToLower("livekit."+global.Settings.Domain) {
 			groups.LiveKitProxyHandler(w, r)
+			return
+		}
+
+		// nsite gateway
+		if nsite.MatchesHost(host) {
+			nsite.GatewayHandler(w, r)
 			return
 		}
 
@@ -592,11 +625,19 @@ func run(ctx context.Context) error {
 				hosts = append(hosts, domain)
 			}
 		}
+		if global.Settings.Nsite.Enabled && global.Settings.Nsite.Domain != "" {
+			hosts = append(hosts, global.Settings.Nsite.Domain)
+		}
 
 		manager := &autocert.Manager{
-			Prompt:     func(_ string) bool { return true },
-			HostPolicy: autocert.HostWhitelist(hosts...),
-			Cache:      autocert.DirCache("certs"),
+			Prompt: func(_ string) bool { return true },
+			HostPolicy: func(ctx context.Context, host string) error {
+				if nsite.MatchesHost(host) {
+					return nil
+				}
+				return autocert.HostWhitelist(hosts...)(ctx, host)
+			},
+			Cache: autocert.DirCache("certs"),
 		}
 
 		// HTTP server on 80 for ACME challenges and user access

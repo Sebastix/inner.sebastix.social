@@ -5,11 +5,13 @@ import (
 	"testing"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/eventstore/slicestore"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/nip29"
 	"github.com/puzpuzpuz/xsync/v3"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/pyramid"
 )
 
 func TestHideEventFromReader(t *testing.T) {
@@ -38,154 +40,232 @@ func TestHideEventFromReader(t *testing.T) {
 	requested := nostr.Filter{Tags: nostr.TagMap{"d": {group.Address.ID}}}
 
 	require.True(t,
-		hideEventFromReader(requested, metadata, []nostr.PubKey{nonMember}),
+		hideEventFromReader(group, requested, metadata, []nostr.PubKey{nonMember}),
 		"expected metadata to be hidden from non-member when group is private and hidden",
 	)
 
-	require.True(t,
-		hideEventFromReader(requested, metadata, []nostr.PubKey{member}),
-		"expected metadata to stay hidden from member when group is private and hidden",
+	require.False(t,
+		hideEventFromReader(group, requested, metadata, []nostr.PubKey{member}),
+		"expected metadata to be visible to member when group is private and hidden",
 	)
 
 	group.Hidden = false
 	require.False(t,
-		hideEventFromReader(requested, metadata, []nostr.PubKey{nonMember}),
+		hideEventFromReader(group, requested, metadata, []nostr.PubKey{nonMember}),
 		"expected private-only group metadata to stay visible to non-member when explicitly requested",
 	)
 }
 
-func TestQueryConditions(t *testing.T) {
-	db := &slicestore.SliceStore{}
-	db.Init()
+func TestFilterQuery(t *testing.T) {
+	prevState := State
+	prevMembers := pyramid.Members
+	prevAbsoluteKey := pyramid.AbsoluteKey
+	prevGroupsEnabled := global.Settings.Groups.Enabled
+	defer func() {
+		State = prevState
+		pyramid.Members = prevMembers
+		pyramid.AbsoluteKey = prevAbsoluteKey
+		global.Settings.Groups.Enabled = prevGroupsEnabled
+	}()
 
-	sk := nostr.Generate()
-	pk := sk.Public()
+	global.Settings.Groups.Enabled = true
+	pyramid.AbsoluteKey = nostr.PubKey{99}
+	pyramid.Members = xsync.NewMapOf[nostr.PubKey, pyramid.Member]()
 
-	broadcasted := 0
+	memberA := nostr.PubKey{7, 1} // member of group_a
+	memberB := nostr.PubKey{7, 2} // member of group_b
+	memberC := nostr.PubKey{7, 3} // member of group_c
+	memberD := nostr.PubKey{7, 4} // member of group_d
+	nonMember := nostr.PubKey{7, 5}
+	relayRoot := nostr.PubKey{7, 6}
 
-	State = &GroupsState{
-		Groups:    xsync.NewMapOf[string, *Group](),
-		DB:        db,
-		secretKey: sk,
-		publicKey: pk,
-		broadcast: func(evt nostr.Event) int {
-			broadcasted++
-			return 1
-		},
+	pyramid.Members.Store(relayRoot, pyramid.Member{
+		Parents: []nostr.PubKey{pyramid.AbsoluteKey},
+	})
+
+	State = &GroupsState{Groups: xsync.NewMapOf[string, *Group]()}
+
+	// group_a: public (not hidden, not private)
+	group_a := &Group{Group: nip29.Group{
+		Address: nip29.GroupAddress{ID: "group_a"},
+		Members: map[nostr.PubKey][]*nip29.Role{memberA: nil},
+	}}
+	State.Groups.Store("group_a", group_a)
+
+	// group_b: private (not hidden)
+	group_b := &Group{Group: nip29.Group{
+		Address: nip29.GroupAddress{ID: "group_b"},
+		Private: true,
+		Members: map[nostr.PubKey][]*nip29.Role{memberB: nil},
+	}}
+	State.Groups.Store("group_b", group_b)
+
+	// group_c: hidden (not private)
+	group_c := &Group{Group: nip29.Group{
+		Address: nip29.GroupAddress{ID: "group_c"},
+		Hidden:  true,
+		Members: map[nostr.PubKey][]*nip29.Role{memberC: nil},
+	}}
+	State.Groups.Store("group_c", group_c)
+
+	// group_d: private+hidden
+	group_d := &Group{Group: nip29.Group{
+		Address: nip29.GroupAddress{ID: "group_d"},
+		Hidden:  true,
+		Private: true,
+		Members: map[nostr.PubKey][]*nip29.Role{memberD: nil},
+	}}
+	State.Groups.Store("group_d", group_d)
+
+	allEvents := []nostr.Event{
+		{Kind: 9, Tags: nostr.Tags{{"h", "group_a"}}},
+		{Kind: 9, Tags: nostr.Tags{{"h", "group_b"}}},
+		{Kind: 9, Tags: nostr.Tags{{"h", "group_c"}}},
+		{Kind: 9, Tags: nostr.Tags{{"h", "group_d"}}},
+
+		group_a.ToMetadataEvent(),
+		group_b.ToMetadataEvent(),
+		group_c.ToMetadataEvent(),
+		group_d.ToMetadataEvent(),
+
+		{Kind: 1, Tags: nostr.Tags{}},
 	}
 
-	ctx := context.Background()
-
-	// create groups
-	for _, id := range []string{"groupA", "groupB"} {
-		{
-			evt := nostr.Event{
-				PubKey:    pk,
-				CreatedAt: nostr.Now(),
-				Kind:      nostr.KindSimpleGroupCreateGroup,
-				Tags:      nostr.Tags{{"h", id}},
+	collect := func(ctx context.Context, filter nostr.Filter) []nostr.Event {
+		query := func(yield func(nostr.Event) bool) {
+			for _, evt := range allEvents {
+				if filter.Matches(evt) {
+					if !yield(evt) {
+						return
+					}
+				}
 			}
-			require.NoError(t, evt.Sign(sk))
-			HandleEventSaved(evt)
 		}
+		var result []nostr.Event
+		for evt := range FilterQuery(ctx, filter, query) {
+			result = append(result, evt)
+		}
+		return result
+	}
+
+	// --- #h explicit request ---
+	t.Run("#h explicit request passes all events with that tag through", func(t *testing.T) {
+		// this is because we assume the request has been filtered already on the OnRequest hook
+		results := collect(t.Context(), nostr.Filter{Tags: nostr.TagMap{"h": {"group_a"}}})
+		require.Len(t, results, 1)
+		require.NotNil(t, results[0].Tags.FindWithValue("h", "group_a"))
 
 		{
-			evt := nostr.Event{
-				PubKey:    pk,
-				CreatedAt: nostr.Now(),
-				Kind:      nostr.KindSimpleGroupPutUser,
-				Tags:      nostr.Tags{{"h", id}, {"p", pk.Hex()}},
+			results := collect(t.Context(), nostr.Filter{Tags: nostr.TagMap{"h": {"group_d"}}})
+			require.Len(t, results, 1)
+			require.NotNil(t, results[0].Tags.FindWithValue("h", "group_d"))
+		}
+	})
+
+	t.Run("#h explicit request empty when groups disabled", func(t *testing.T) {
+		global.Settings.Groups.Enabled = false
+		defer func() { global.Settings.Groups.Enabled = true }()
+		ctx := khatru.ForceSetAuthed(t.Context(), nonMember)
+		results := collect(ctx, nostr.Filter{Tags: nostr.TagMap{"h": {"group_a"}}})
+		require.Empty(t, results)
+	})
+
+	// --- broad kind-39000 ---
+	t.Run("broad kind-39000: hidden groups don't show up", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), nonMember)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{39000}})
+		require.Len(t, results, 2)
+	})
+
+	t.Run("broad kind-39000: hidden groups show up to member", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), memberC)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{39000}})
+		require.Len(t, results, 3)
+	})
+
+	// --- #d metadata request ---
+	t.Run("#d metadata request: hidden group shows up when specified", func(t *testing.T) {
+		results := collect(t.Context(), nostr.Filter{
+			Kinds: []nostr.Kind{39000},
+			Tags:  nostr.TagMap{"d": {"group_b"}},
+		})
+		require.Len(t, results, 1)
+		require.Equal(t, results[0].Tags.GetD(), "group_b")
+	})
+
+	t.Run("#d metadata request: hidden+private group doesn't", func(t *testing.T) {
+		results := collect(t.Context(), nostr.Filter{
+			Kinds: []nostr.Kind{39000},
+			Tags:  nostr.TagMap{"d": {"group_d"}},
+		})
+		require.Empty(t, results)
+
+		{
+			// only for members
+			ctx := khatru.ForceSetAuthed(t.Context(), memberD)
+			results := collect(ctx, nostr.Filter{
+				Kinds: []nostr.Kind{39000},
+				Tags:  nostr.TagMap{"d": {"group_d"}},
+			})
+			require.Len(t, results, 1)
+		}
+	})
+
+	// --- broad kind-9 ---
+	t.Run("broad kind-9: non-member sees only public group", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), nonMember)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{9}})
+		require.Len(t, results, 1)
+		require.NotNil(t, results[0].Tags.FindWithValue("h", "group_a"))
+	})
+
+	t.Run("broad kind-9: no auth sees only public group", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), nonMember)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{9}})
+		require.Len(t, results, 1)
+		require.NotNil(t, results[0].Tags.FindWithValue("h", "group_a"))
+	})
+
+	t.Run("broad kind-9: memberA, no change since his group was already public", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), memberA)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{9}})
+		require.Len(t, results, 1)
+		require.NotNil(t, results[0].Tags.FindWithValue("h", "group_a"))
+	})
+
+	t.Run("broad kind-9: memberB sees his private group also", func(t *testing.T) {
+		ctx := khatru.ForceSetAuthed(t.Context(), memberB)
+		results := collect(ctx, nostr.Filter{Kinds: []nostr.Kind{9}})
+		require.Len(t, results, 2)
+		require.NotNil(t, results[0].Tags.FindWithValue("h", "group_a"))
+		require.NotNil(t, results[1].Tags.FindWithValue("h", "group_b"))
+	})
+
+	// --- empty filter ---
+	t.Run("empty filter: we get everything mixed up (but not private or hidden stuff)", func(t *testing.T) {
+		results := collect(t.Context(), nostr.Filter{})
+
+		foundKind1 := false
+		foundKind9 := false
+		foundKind39000 := false
+		for _, evt := range results {
+			if evt.Kind == 1 {
+				foundKind1 = true
 			}
-			require.NoError(t, evt.Sign(sk))
-			HandleEventSaved(evt)
+			if evt.Kind == 9 && evt.Tags.Find("h") != nil {
+				foundKind9 = true
+
+				require.Nil(t, evt.Tags.FindWithValue("h", "group_b")) // this is a secret group
+				require.Nil(t, evt.Tags.FindWithValue("h", "group_d")) // this is a secret group
+			}
+			if evt.Kind == 39000 {
+				foundKind39000 = true
+
+				require.False(t, evt.Tags.Has("hidden"))
+			}
 		}
-	}
-
-	require.Equal(t, 10, broadcasted, "broadcasted")
-
-	// make group B hidden
-	editHidden := nostr.Event{
-		PubKey:    pk,
-		CreatedAt: nostr.Now(),
-		Kind:      nostr.Kind(9002),
-		Tags:      nostr.Tags{{"h", "groupB"}, {"hidden"}},
-	}
-	require.NoError(t, editHidden.Sign(sk))
-	HandleEventSaved(editHidden)
-
-	require.Equal(t, 11, broadcasted, "broadcasted")
-
-	{
-		// when all groups are requested the hidden group doesn't come
-		var broadResults []nostr.Event
-		for evt := range Query(ctx, nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
-		}) {
-			broadResults = append(broadResults, evt)
-		}
-		require.Len(t, broadResults, 1)
-		require.Equal(t, "groupA", broadResults[0].Tags.GetD())
-	}
-
-	{
-		// the public group shows up when queried by id
-		var requestedResults []nostr.Event
-		for evt := range Query(ctx, nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
-			Tags:  nostr.TagMap{"d": {"groupA"}},
-		}) {
-			requestedResults = append(requestedResults, evt)
-		}
-		require.Len(t, requestedResults, 1)
-		require.Equal(t, "groupA", requestedResults[0].Tags.GetD())
-	}
-
-	{
-		// the hidden group shows up when queried by id
-		var requestedResults []nostr.Event
-		for evt := range Query(ctx, nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
-			Tags:  nostr.TagMap{"d": {"groupB"}},
-		}) {
-			requestedResults = append(requestedResults, evt)
-		}
-		require.Len(t, requestedResults, 1)
-		require.Equal(t, "groupB", requestedResults[0].Tags.GetD())
-	}
-
-	// make group B not only hidden but also private
-	editPrivate := nostr.Event{
-		PubKey:    pk,
-		CreatedAt: nostr.Now(),
-		Kind:      nostr.Kind(9002),
-		Tags:      nostr.Tags{{"h", "groupB"}, {"hidden"}, {"private"}},
-	}
-	require.NoError(t, editPrivate.Sign(sk))
-	HandleEventSaved(editPrivate)
-	require.Equal(t, 12, broadcasted, "broadcasted")
-
-	{
-		// the hidden group doesn't show up when queried by id anymore
-		var requestedResults []nostr.Event
-		for evt := range Query(ctx, nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
-			Tags:  nostr.TagMap{"d": {"groupB"}},
-		}) {
-			requestedResults = append(requestedResults, evt)
-		}
-		require.Len(t, requestedResults, 0)
-	}
-
-	{
-		// but it should show up when queried by id by an authed member
-		var broadResults []nostr.Event
-		for evt := range Query(khatru.ForceSetAuthed(ctx, pk), nostr.Filter{
-			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
-			Tags:  nostr.TagMap{"d": {"groupB"}},
-		}) {
-			broadResults = append(broadResults, evt)
-		}
-		require.Len(t, broadResults, 1)
-		require.Equal(t, "groupB", broadResults[0].Tags.GetD())
-	}
+		require.True(t, foundKind1)
+		require.True(t, foundKind9)
+		require.True(t, foundKind39000)
+	})
 }
