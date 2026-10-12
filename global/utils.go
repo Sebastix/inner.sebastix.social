@@ -1,12 +1,14 @@
 package global
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,7 +31,7 @@ func GetLoggedUser(r *http.Request) (nostr.PubKey, bool) {
 		if evtj, err := base64.StdEncoding.DecodeString(cookie.Value); err == nil {
 			var evt nostr.Event
 			if err := json.Unmarshal(evtj, &evt); err == nil {
-				if tag := evt.Tags.Find("domain"); tag != nil && tag[1] == Settings.Domain {
+				if tag := evt.Tags.Find("domain"); tag != nil && Settings.IsValidDomain(tag[1]) {
 					if evt.VerifySignature() {
 						return evt.PubKey, true
 					}
@@ -46,7 +48,7 @@ func PubKeyFromInput(input string) nostr.PubKey {
 	var pubkey nostr.PubKey
 	if pfx, value, err := nip19.Decode(input); err == nil && pfx == "npub" {
 		pubkey = value.(nostr.PubKey)
-	} else if pfx == "nprofile" {
+	} else if err == nil && pfx == "nprofile" {
 		pubkey = value.(nostr.ProfilePointer).PublicKey
 	} else if pk, err := nostr.PubKeyFromHex(input); err == nil {
 		pubkey = pk
@@ -58,6 +60,51 @@ func PubKeyFromInput(input string) nostr.PubKey {
 func JSONString(v any) string {
 	b, _ := json.Marshal(v)
 	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// OriginAllowed checks whether the request's Origin or Referer host matches one of
+// the allowed domains (one domain per line, case-insensitive). If allowedDomains is
+// empty, all requests are allowed. Returns the matched domain when allowed and an
+// empty string otherwise.
+func OriginAllowed(r *http.Request, allowedDomains []string) bool {
+	hasAllowed := false
+	for _, d := range allowedDomains {
+		if strings.TrimSpace(d) != "" {
+			hasAllowed = true
+			break
+		}
+	}
+	if !hasAllowed {
+		return true
+	}
+
+	host := ""
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err == nil {
+			host = u.Host
+		}
+	}
+	if host == "" {
+		if ref := r.Header.Get("Referer"); ref != "" {
+			if u, err := url.Parse(ref); err == nil {
+				host = u.Host
+			}
+		}
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	for _, d := range allowedDomains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" {
+			continue
+		}
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
 }
 
 func CleanupRelay(relay *khatru.Relay) {
@@ -171,6 +218,30 @@ func ParseKinds(spec string, defaultKinds []nostr.Kind) ([]nostr.Kind, error) {
 	return kinds, nil
 }
 
+// ParseDomainsTextarea splits a textarea value into a cleaned list of non-empty
+// domains (one per line), also removing duplicates.
+func ParseDomainsTextarea(value string) []string {
+	var out []string
+	for _, line := range strings.Split(value, "\n") {
+		d := strings.ToLower(strings.TrimSpace(line))
+		if d == "" {
+			continue
+		}
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func RejectInternalKinds(_ context.Context, event nostr.Event) (bool, string) {
+	switch event.Kind {
+	case 8000, 8001, 13534, 19004, 33534:
+		return true, "blocked: kind reserved for relay internal use"
+	}
+	return false, ""
+}
+
 func RandomString(size int) string {
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
@@ -199,12 +270,20 @@ func LogHandler(w http.ResponseWriter, r *http.Request, logFile string) {
 	t, err := tail.TailFile(logFile, tail.Config{Follow: true, ReOpen: true})
 	if err != nil {
 		Log.Error().Err(err).Msg("failed to tail imgproxy.log")
+		return
 	}
+	defer t.Cleanup()
+	defer t.Stop()
 
-	for line := range t.Lines {
-		_, _ = io.WriteString(w, "<div class=\"line\">"+terminal.Render([]byte(line.Text))+"</div>\n")
-		flusher.Flush()
-		if r.Context().Err() != nil {
+	for {
+		select {
+		case line, ok := <-t.Lines:
+			if !ok {
+				return
+			}
+			_, _ = io.WriteString(w, "<div class=\"line\">"+terminal.Render([]byte(line.Text))+"</div>\n")
+			flusher.Flush()
+		case <-r.Context().Done():
 			return
 		}
 	}

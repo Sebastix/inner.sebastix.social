@@ -15,14 +15,10 @@ import (
 	"github.com/mailru/easyjson"
 )
 
-var reactionKinds = []nostr.Kind{6, 7, 9321, 9735, 9802, 1, 1111}
+var reactionKinds = []nostr.Kind{6, 7, 9321, 9735, 9802, 1, 1111, 1244}
 
 func processReactions(ctx context.Context, event nostr.Event) {
 	totalMembers := pyramid.Members.Size()
-	if totalMembers <= 10 {
-		// makes no sense to have this in this case
-		return
-	}
 
 	// sum existing reactions for this target, a unique vote per member
 	popularVotes := make(map[string]map[nostr.PubKey]struct{})
@@ -42,7 +38,7 @@ func processReactions(ctx context.Context, event nostr.Event) {
 						popularVotes[target] = map[nostr.PubKey]struct{}{reaction.PubKey: {}}
 					}
 
-					if reaction.Kind != 1 && reaction.Kind != 1111 {
+					if reaction.Kind != 1 && reaction.Kind != 1111 && reaction.Kind != 1244 {
 						if votes, ok := bestVotes[target]; ok {
 							votes[reaction.PubKey] = struct{}{}
 						} else {
@@ -54,8 +50,8 @@ func processReactions(ctx context.Context, event nostr.Event) {
 		}
 	}
 
-	popularThreshold := min(2, (totalMembers*global.Settings.Popular.PercentThreshold)/100)
-	uppermostThreshold := min(3, (totalMembers*global.Settings.Uppermost.PercentThreshold)/100)
+	popularThreshold := max(2, global.Settings.Popular.Threshold.Get(totalMembers))
+	uppermostThreshold := max(3, global.Settings.Uppermost.Threshold.Get(totalMembers))
 
 	// for all events we meet the popular threshold for
 	for target, votes := range popularVotes {
@@ -66,10 +62,10 @@ func processReactions(ctx context.Context, event nostr.Event) {
 		// fetch
 		targetEvent := fetchEventBasedOnHintsWeHave(target)
 		if targetEvent == nil {
-			return
+			continue
 		}
 		if nip70.IsProtected(*targetEvent) || nip70.HasEmbeddedProtected(*targetEvent) {
-			return
+			continue
 		}
 
 		// add to the qualified layers

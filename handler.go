@@ -21,12 +21,14 @@ import (
 
 	"github.com/bep/debounce"
 	"github.com/fiatjaf/pyramid/blossom"
+	"github.com/fiatjaf/pyramid/bookmarks"
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/groups"
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/network"
 	"github.com/fiatjaf/pyramid/operator"
 	"github.com/fiatjaf/pyramid/personal"
 	"github.com/fiatjaf/pyramid/popular"
@@ -133,6 +135,26 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 					global.Settings.MaxInvitesPerPerson, _ = strconv.Atoi(v[0])
 					global.Settings.MaxInvitesAtEachLevel = nil
 				}
+			case "wot_min_followed_by":
+				if err := global.Settings.Wot.MinFollowedBy.FromString(strings.TrimSpace(v[0])); err != nil {
+					http.Error(w, "invalid wot_min_followed_by: "+err.Error(), 400)
+					return
+				}
+				//
+				// wot-specific (global web-of-trust)
+			case "wot_specifically_blocked":
+				var blocked []nostr.PubKey
+				for _, s := range v {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						continue
+					}
+					pk := global.PubKeyFromInput(s)
+					if pk != nostr.ZeroPK && !slices.Contains(blocked, pk) {
+						blocked = append(blocked, pk)
+					}
+				}
+				global.Settings.Wot.SpecificallyBlocked = blocked
 			case "max_event_size":
 				global.Settings.Limits.MaxEventSize, _ = strconv.Atoi(v[0])
 			case "max_subscriptions_open":
@@ -301,6 +323,35 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				favorites.Relay.ServiceURL = global.Settings.Favorites.GetServiceURL()
 				favorites.Init()
 				go restartSoon()
+			case "bookmarks_httpBasePath":
+				if len(v[0]) == 0 || !justLetters.MatchString(v[0]) {
+					http.Error(w, "invalid path must contain only ascii letters and numbers", 400)
+					return
+				}
+				global.Settings.Bookmarks.HTTPBasePath = v[0]
+				bookmarks.Relay.ServiceURL = global.Settings.Bookmarks.GetServiceURL()
+				delayedRedirectTarget = global.Settings.Bookmarks.GetPageURL()
+				bookmarks.Init()
+				go restartSoon()
+			case "bookmarks_httpDomain":
+				domain, err := normalizeDomainInput(v[0])
+				if err != nil {
+					http.Error(w, err.Error(), 400)
+					return
+				}
+				global.Settings.Bookmarks.HTTPDomain = domain
+				bookmarks.Relay.ServiceURL = global.Settings.Bookmarks.GetServiceURL()
+				bookmarks.Init()
+				go restartSoon()
+			case "bookmarks_all_access":
+				switch v[0] {
+				case "public", "members", "disabled":
+					global.Settings.Bookmarks.AllAccess = v[0]
+					bookmarks.Init()
+				default:
+					http.Error(w, "invalid bookmarks_all_access: must be public, members, or disabled", 400)
+					return
+				}
 			case "moderated_name":
 				global.Settings.Moderated.Name = v[0]
 			case "moderated_description":
@@ -311,13 +362,15 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				global.Settings.Moderated.Pinned = checkPinnedID(v[0], global.IL.Moderated)
 				global.CachePinnedEvent(global.RelayModerated)
 			case "moderated_httpBasePath":
-				if len(v[0]) > 0 {
-					global.Settings.Moderated.HTTPBasePath = v[0]
-					moderated.Relay.ServiceURL = global.Settings.Moderated.GetServiceURL()
-					delayedRedirectTarget = global.Settings.Moderated.GetPageURL()
-					moderated.Init()
-					go restartSoon()
+				if len(v[0]) == 0 || !justLetters.MatchString(v[0]) {
+					http.Error(w, "invalid path must contain only ascii letters and numbers", 400)
+					return
 				}
+				global.Settings.Moderated.HTTPBasePath = v[0]
+				moderated.Relay.ServiceURL = global.Settings.Moderated.GetServiceURL()
+				delayedRedirectTarget = global.Settings.Moderated.GetPageURL()
+				moderated.Init()
+				go restartSoon()
 			case "moderated_httpDomain":
 				domain, err := normalizeDomainInput(v[0])
 				if err != nil {
@@ -470,21 +523,55 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				uppermost.Relay.ServiceURL = global.Settings.Uppermost.GetServiceURL()
 				uppermost.Init()
 				go restartSoon()
+			case "network_name":
+				global.Settings.Network.Name = v[0]
+			case "network_description":
+				global.Settings.Network.Description = v[0]
+			case "network_icon":
+				global.Settings.Network.Icon = v[0]
+			case "network_pinned":
+				global.Settings.Network.Pinned = checkPinnedID(v[0], global.IL.Network)
+				global.CachePinnedEvent(global.RelayNetwork)
+			case "network_httpBasePath":
+				if len(v[0]) == 0 || !justLetters.MatchString(v[0]) {
+					http.Error(w, "invalid path must contain only ascii letters and numbers", 400)
+					return
+				}
+				global.Settings.Network.HTTPBasePath = v[0]
+				network.Relay.ServiceURL = global.Settings.Network.GetServiceURL()
+				delayedRedirectTarget = global.Settings.Network.GetPageURL()
+				network.Init()
+				go restartSoon()
+			case "network_httpDomain":
+				domain, err := normalizeDomainInput(v[0])
+				if err != nil {
+					http.Error(w, err.Error(), 400)
+					return
+				}
+				global.Settings.Network.HTTPDomain = domain
+				network.Relay.ServiceURL = global.Settings.Network.GetServiceURL()
+				network.Init()
+				go restartSoon()
 				//
 				// moderated-specific
-			case "moderated_enabled":
-				global.Settings.Moderated.Enabled = v[0] == "on"
-			case "moderated_min_pow":
-				pow, _ := strconv.ParseUint(v[0], 10, 64)
-				global.Settings.Moderated.MinPoW = uint(pow)
+			case "moderated_approval_votes":
+				spec := strings.TrimSpace(v[0])
+				if spec != "" {
+					for _, part := range strings.Split(spec, "/") {
+						n, err := strconv.Atoi(strings.TrimSpace(part))
+						if err != nil || n <= 0 {
+							http.Error(w, "invalid moderated_approval_votes: must be a positive number or slash-separated positive numbers", 400)
+							return
+						}
+					}
+				}
+				global.Settings.Moderated.ApprovalVotesSpec = spec
 				//
 				// inbox-specific
 			case "inbox_hellthread_limit":
 				global.Settings.Inbox.HellthreadLimit, _ = strconv.Atoi(v[0])
-			case "inbox_min_dm_pow":
-				global.Settings.Inbox.MinDMPoW, _ = strconv.Atoi(v[0])
 			case "inbox_require_auth_for_dm":
-				if v[0] == "always" || v[0] == "when_no_pow" || v[0] == "" {
+				if v[0] == "always" || v[0] == "" {
 					global.Settings.Inbox.RequireAuthForDM = v[0]
 				}
 			case "inbox_allowed_kinds":
@@ -492,30 +579,19 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "invalid inbox_allowed_kinds: "+err.Error(), 400)
 					return
 				}
-			case "inbox_specifically_blocked":
-				var blocked []nostr.PubKey
-				for _, s := range v {
-					s = strings.TrimSpace(s)
-					if s == "" {
-						continue
-					}
-					pk := global.PubKeyFromInput(s)
-					if pk != nostr.ZeroPK && !slices.Contains(blocked, pk) {
-						blocked = append(blocked, pk)
-					}
-				}
-				global.Settings.Inbox.SpecificallyBlocked = blocked
 				//
 				// popular-specific
-			case "popular_percent_threshold":
-				if val, err := strconv.Atoi(v[0]); err == nil {
-					global.Settings.Popular.PercentThreshold = val
+			case "popular_threshold":
+				if err := global.Settings.Popular.Threshold.FromString(v[0]); err != nil {
+					http.Error(w, "invalid popular_threshold: "+err.Error(), 400)
+					return
 				}
 				//
 				// uppermost-specific
-			case "uppermost_percent_threshold":
-				if val, err := strconv.Atoi(v[0]); err == nil {
-					global.Settings.Uppermost.PercentThreshold = val
+			case "uppermost_threshold":
+				if err := global.Settings.Uppermost.Threshold.FromString(v[0]); err != nil {
+					http.Error(w, "invalid uppermost_threshold: "+err.Error(), 400)
+					return
 				}
 				//
 				// allowed kinds settings
@@ -582,6 +658,11 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				if v[0] == "members" || v[0] == "wot" || v[0] == "" {
 					global.Settings.Operator.RegistrationFilter = v[0]
 				}
+				//
+				// linkpreview domain filter textareas
+			case "linkpreview_allowed_domains":
+				global.Settings.LinkPreview.AllowedDomains = global.ParseDomainsTextarea(v[0])
+
 			}
 		}
 
@@ -724,6 +805,8 @@ func iconHandler(w http.ResponseWriter, r *http.Request) {
 			global.Settings.RelayIcon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
 		case "favorites":
 			global.Settings.Favorites.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
+		case "bookmarks":
+			global.Settings.Bookmarks.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
 		case "inbox":
 			global.Settings.Inbox.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
 		case "internal":
@@ -736,6 +819,8 @@ func iconHandler(w http.ResponseWriter, r *http.Request) {
 			global.Settings.Uppermost.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
 		case "moderated":
 			global.Settings.Moderated.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
+		case "network":
+			global.Settings.Network.Icon = global.Settings.HTTPScheme() + global.Settings.Domain + "/icon/" + base + ext
 		}
 
 		if err := global.SaveUserSettings(); err != nil {
@@ -749,7 +834,10 @@ func iconHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var domainRegex = regexp.MustCompile(`^((xn--|_)?[a-z0-9-]{0,61}[a-z0-9]{1,1}\.)*(xn--)?([a-z0-9][a-z0-9\-]{0,60}|[a-z0-9-]{1,30}\.[a-z]{2,})?$`)
+// Labels may be up to 63 octets (RFC 1035 §2.3.4). The quantifiers below
+// are one less than the label length they allow, since each alternative
+// spells out a leading and/or trailing character separately.
+var domainRegex = regexp.MustCompile(`^((xn--|_)?[a-z0-9-]{0,62}[a-z0-9]{1,1}\.)*(xn--)?([a-z0-9][a-z0-9\-]{0,62}|[a-z0-9-]{1,30}\.[a-z]{2,})?$`)
 
 func domainSetupHandler(w http.ResponseWriter, r *http.Request) {
 	if global.Settings.Domain != "" {
@@ -801,11 +889,13 @@ func setupDomain(domain string) error {
 
 	inbox.Relay.ServiceURL = global.Settings.Inbox.GetServiceURL()
 	favorites.Relay.ServiceURL = global.Settings.Favorites.GetServiceURL()
+	bookmarks.Relay.ServiceURL = global.Settings.Bookmarks.GetServiceURL()
 	internal.Relay.ServiceURL = global.Settings.Internal.GetServiceURL()
 	personal.Relay.ServiceURL = global.Settings.Personal.GetServiceURL()
 	moderated.Relay.ServiceURL = global.Settings.Moderated.GetServiceURL()
 	popular.Relay.ServiceURL = global.Settings.Popular.GetServiceURL()
 	uppermost.Relay.ServiceURL = global.Settings.Uppermost.GetServiceURL()
+	network.Relay.ServiceURL = global.Settings.Network.GetServiceURL()
 
 	blossom.BlobIndex.ServiceURL = global.Settings.HTTPScheme() + global.Settings.Domain
 	if blossom.Server != nil {
@@ -934,6 +1024,15 @@ func memberPageHandler(w http.ResponseWriter, r *http.Request) {
 	loggedUser, isLogged := global.GetLoggedUser(r)
 
 	if r.Method == http.MethodPost {
+		if !isLogged || !pyramid.IsMember(loggedUser) {
+			http.Error(w, "unauthorized", 403)
+			return
+		}
+		if !global.Settings.NIP05.Enabled {
+			http.Error(w, "nip05 is disabled", 400)
+			return
+		}
+
 		if nip05Username := r.PostFormValue("nip05_username"); nip05Username != "" {
 			// basic validation for NIP-05 username (alphanumeric and underscores only)
 			nip05Username = strings.ToLower(nip05Username)
@@ -1028,8 +1127,9 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	popularStats, _ := global.IL.Popular.ComputeStats(mmm.StatsOptions{})
 	uppermostStats, _ := global.IL.Uppermost.ComputeStats(mmm.StatsOptions{})
 	inboxStats, _ := global.IL.Inbox.ComputeStats(mmm.StatsOptions{})
+	networkStats, _ := global.IL.Network.ComputeStats(mmm.StatsOptions{})
 
-	StatsPage(loggedUser, mainStats, systemStats, favoritesStats, internalStats, personalStats, moderatedStats, popularStats, uppermostStats, inboxStats).Render(r.Context(), w)
+	StatsPage(loggedUser, mainStats, systemStats, favoritesStats, internalStats, personalStats, moderatedStats, popularStats, uppermostStats, inboxStats, networkStats).Render(r.Context(), w)
 }
 
 func syncHandler(w http.ResponseWriter, r *http.Request) {
@@ -1054,10 +1154,22 @@ func syncHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	streamingSync(r.Context(), targetUser, remoteUrl, download, upload, w)
+	kinds, err := global.ParseKinds(global.Settings.AllowedKindsSpec, global.SupportedKindsDefault)
+	if err != nil {
+		http.Error(w, "invalid kinds on settings", http.StatusBadRequest)
+		return
+	}
+
+	streamingSync(r.Context(), targetUser, kinds, remoteUrl, upload, download, w)
 }
 
 func nip05Handler(w http.ResponseWriter, r *http.Request) {
+	// NIP-AD: path-based web address resolution for groups
+	if path := r.URL.Query().Get("path"); path != "" {
+		groups.WebAddressHandler(w, r)
+		return
+	}
+
 	resp := nip05.WellKnownResponse{
 		Names: global.Settings.NIP05.Names,
 	}

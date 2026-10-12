@@ -67,7 +67,7 @@ func listBannedPubkeysHandler(ctx context.Context) ([]nip86.PubKeyReason, error)
 	}
 
 	var result []nip86.PubKeyReason
-	for _, pubkey := range global.Settings.Inbox.SpecificallyBlocked {
+	for _, pubkey := range global.Settings.Wot.SpecificallyBlocked {
 		result = append(result, nip86.PubKeyReason{
 			PubKey: pubkey,
 			Reason: "",
@@ -87,13 +87,13 @@ func banPubkeyHandler(ctx context.Context, pubkey nostr.PubKey, reason string) e
 	}
 
 	// check if already banned
-	for _, p := range global.Settings.Inbox.SpecificallyBlocked {
+	for _, p := range global.Settings.Wot.SpecificallyBlocked {
 		if p == pubkey {
 			return nil // already banned
 		}
 	}
 
-	global.Settings.Inbox.SpecificallyBlocked = append(global.Settings.Inbox.SpecificallyBlocked, pubkey)
+	global.Settings.Wot.SpecificallyBlocked = append(global.Settings.Wot.SpecificallyBlocked, pubkey)
 	return global.SaveUserSettings()
 }
 
@@ -109,12 +109,12 @@ func allowPubkeyHandler(ctx context.Context, pubkey nostr.PubKey, reason string)
 
 	// remove from list
 	var newList []nostr.PubKey
-	for _, p := range global.Settings.Inbox.SpecificallyBlocked {
+	for _, p := range global.Settings.Wot.SpecificallyBlocked {
 		if p != pubkey {
 			newList = append(newList, p)
 		}
 	}
-	global.Settings.Inbox.SpecificallyBlocked = newList
+	global.Settings.Wot.SpecificallyBlocked = newList
 	return global.SaveUserSettings()
 }
 
@@ -122,6 +122,12 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 	caller, ok := khatru.GetAuthed(ctx)
 	if !ok {
 		return fmt.Errorf("not authenticated")
+	}
+	for report := range global.IL.InboxReports.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+		if !pyramid.IsMember(caller) || (!pyramid.IsRoot(caller) && report.PubKey != caller) {
+			return fmt.Errorf("only report author or root can delete report")
+		}
+		return deleteReport(id)
 	}
 
 	// allow if caller is a root user
@@ -166,6 +172,14 @@ func banEventHandler(ctx context.Context, id nostr.ID, reason string) error {
 	return nil
 }
 
+func deleteReport(id nostr.ID) error {
+	if err := global.IL.InboxReports.DeleteEvent(id); err != nil {
+		return err
+	}
+	rebuildBanState()
+	return nil
+}
+
 func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	caller, ok := khatru.GetAuthed(ctx)
 	if !ok {
@@ -198,7 +212,7 @@ func allowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	}
 
 	// rebuild
-	global.KindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.Inbox.AllowedKindsSpec, supportedKindsDefault)
+	kindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.Inbox.AllowedKindsSpec, supportedKindsDefault)
 
 	return global.SaveUserSettings()
 }
@@ -249,7 +263,7 @@ func disallowKindHandler(ctx context.Context, kind nostr.Kind) error {
 	}
 
 	// rebuild this
-	global.KindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.Inbox.AllowedKindsSpec, supportedKindsDefault)
+	kindIsAllowed, _ = global.BuildKindIsAllowedFunction(global.Settings.Inbox.AllowedKindsSpec, supportedKindsDefault)
 
 	return global.SaveUserSettings()
 }

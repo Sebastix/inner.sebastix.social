@@ -12,9 +12,11 @@ const (
 	RelayInternal  RelayID = "internal"
 	RelayPersonal  RelayID = "personal"
 	RelayFavorites RelayID = "favorites"
+	RelayBookmarks RelayID = "bookmarks"
 	RelayGroups    RelayID = "groups"
 	RelayInbox     RelayID = "inbox"
 	RelayModerated RelayID = "moderated"
 	RelayPopular   RelayID = "popular"
 	RelayUppermost RelayID = "uppermost"
+	RelayNetwork   RelayID = "network"
 )

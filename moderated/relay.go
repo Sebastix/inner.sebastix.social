@@ -10,10 +10,10 @@ import (
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/khatru/policies"
 	"fiatjaf.com/nostr/nip11"
-	"fiatjaf.com/nostr/nip13"
 
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
+	"github.com/fiatjaf/pyramid/wot"
 )
 
 var (
@@ -93,18 +93,28 @@ func setupEnabled() {
 	)
 
 	Relay.OnEvent = func(ctx context.Context, evt nostr.Event) (bool, string) {
+		if reject, msg := global.RejectInternalKinds(ctx, evt); reject {
+			return true, msg
+		}
+
 		if !global.KindIsAllowed(evt.Kind) {
 			return true, "blocked: kind unallowed"
 		}
 
-		if global.Settings.Moderated.MinPoW > 0 {
-			difficulty := nip13.Difficulty(evt.ID)
-			if uint(difficulty) < global.Settings.Moderated.MinPoW {
-				return true, fmt.Sprintf("pow: requires %d bits, got %d", global.Settings.Moderated.MinPoW, difficulty)
+		// automatically filtered by the extended web-of-trust: non-members
+		// outside the wot don't even reach the moderation queue
+		authedPublicKeys := khatru.GetAllAuthed(ctx)
+		if len(authedPublicKeys) == 0 {
+			return true, "auth-required: we check publishers against the relay extended network"
+		}
+
+		for _, authed := range authedPublicKeys {
+			if reject, _ := wot.RejectAuthor(authed); !reject {
+				return false, ""
 			}
 		}
 
-		return false, ""
+		return true, "restricted: you're not in the relay extended network"
 	}
 
 	Relay.PreventBroadcast = func(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Event) bool {

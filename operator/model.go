@@ -16,6 +16,7 @@ var ErrAccountNotFound = fmt.Errorf("account not found")
 
 type Registration struct {
 	Email         string `json:"email"`
+	PubKey        string `json:"pubkey"`
 	Central       string `json:"central"`
 	CentralPubKey string `json:"central_pubkey"`
 	Shard         string `json:"shard"`
@@ -24,6 +25,12 @@ type Registration struct {
 func saveRegistration(reg Registration) error {
 	data, err := json.Marshal(reg)
 	if err != nil {
+		return err
+	}
+
+	// drop any previous registration(s) for this email so we don't leave
+	// duplicate shards behind (which a later erase/delete would miss)
+	if err := deleteRegistration(reg.Email); err != nil && err != ErrAccountNotFound {
 		return err
 	}
 
@@ -59,10 +66,18 @@ func loadRegistrationEvent(email string) (nostr.Event, Registration, error) {
 }
 
 func deleteRegistration(email string) error {
-	evt, _, err := loadRegistrationEvent(email)
-	if err != nil {
-		return err
+	found := false
+	for evt := range global.IL.OperatorBucket.QueryEvents(nostr.Filter{
+		Kinds: []nostr.Kind{KindOperatorRegistrationStore},
+		Tags:  nostr.TagMap{"email": []string{email}},
+	}, 100) {
+		found = true
+		if err := global.IL.OperatorBucket.DeleteEvent(evt.ID); err != nil {
+			return err
+		}
 	}
-
-	return global.IL.OperatorBucket.DeleteEvent(evt.ID)
+	if !found {
+		return ErrAccountNotFound
+	}
+	return nil
 }

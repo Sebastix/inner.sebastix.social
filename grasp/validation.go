@@ -3,6 +3,7 @@ package grasp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"fiatjaf.com/nostr"
@@ -28,9 +29,9 @@ func RejectIncomingEvent(ctx context.Context, event nostr.Event) (reject bool, r
 			return true, "pull request not found: must reference an existing pull request (kind 1618)"
 		}
 	case 1630, 1631, 1632, 1633:
-		// these kinds must reference an existing kind 1617 or 1618
-		if eTag := event.Tags.Find("e"); eTag == nil || !refExistsAsKind(eTag[1], []nostr.Kind{1617, 1618}) {
-			return true, "issue not found: must reference an existing issue or pull request (kind 1617 or 1618)"
+		// these kinds must reference an existing kind 1617, 1618 or 1621
+		if eTag := event.Tags.Find("e"); eTag == nil || !refExistsAsKind(eTag[1], []nostr.Kind{1617, 1618, 1621}) {
+			return true, "root not found: must reference an existing patch, pull request or issue (kind 1617, 1618 or 1621)"
 		}
 	}
 
@@ -77,11 +78,13 @@ func refExistsAsKind(eventId string, kinds []nostr.Kind) bool {
 		return false
 	}
 
-	for range global.IL.Main.QueryEvents(nostr.Filter{
-		IDs:   []nostr.ID{id},
-		Kinds: kinds,
+	// the ID query fast-path ignores the Kinds constraint, so check the kind ourselves
+	for evt := range global.IL.Main.QueryEvents(nostr.Filter{
+		IDs: []nostr.ID{id},
 	}, 1) {
-		return true
+		if slices.Contains(kinds, evt.Kind) {
+			return true
+		}
 	}
 
 	return false

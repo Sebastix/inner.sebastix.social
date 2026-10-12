@@ -1,7 +1,6 @@
 package imgproxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -37,7 +36,7 @@ var (
 	Handler = &MuxHandler{}
 
 	imgproxySocketClient *http.Client
-	baseSecret, _        = hex.DecodeString(global.Settings.Imgproxy.BaseSecret)
+	baseSecret           []byte
 )
 
 var state = struct {
@@ -49,6 +48,10 @@ var state = struct {
 }{}
 
 func Init() {
+	// decode the stored base secret now that settings are loaded (package-level
+	// initializers run before global.Init() populates the settings)
+	baseSecret, _ = hex.DecodeString(global.Settings.Imgproxy.BaseSecret)
+
 	if !global.Settings.Imgproxy.Enabled {
 		setupDisabled()
 		return
@@ -91,29 +94,36 @@ func pageHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		spl := strings.Split(r.URL.Path, "/")
-		path := "/" + strings.Join(spl[3:], "/")
-		decodedPath, _ := url.PathUnescape(path)
 
 		// decode special token from url
 		token, err := base64.RawURLEncoding.DecodeString(spl[2])
-		if err != nil || len(token) != 48 {
-			http.Error(w, "wrong size token", http.StatusUnauthorized)
+
+		imgproxyURL := ""
+		if err == nil && len(token) == 48 {
+			// token mode: validate mac against the path that follows
+			path := "/" + strings.Join(spl[3:], "/")
+			decodedPath, _ := url.PathUnescape(path)
+
+			mac := token[0:16]
+			pubkey := token[16 : 16+32]
+
+			pubkeySecret := pubkeySecretFor(pubkey)
+
+			h := hmac.New(sha256.New, pubkeySecret)
+			h.Write([]byte(decodedPath))
+			expected := h.Sum(nil)
+			if !hmac.Equal(expected[0:16], mac) {
+				http.Error(w, "mac doesn't match", http.StatusUnauthorized)
+				return
+			}
+
+			imgproxyURL = "http://imgproxy/insecure" + path
+		} else {
+			// malformed token: reject instead of forwarding an empty URL
+			http.NotFound(w, r)
 			return
 		}
-		mac := token[0:16]
-		pubkey := token[16 : 16+32]
 
-		pubkeySecret := pubkeySecretFor(pubkey)
-
-		h := hmac.New(sha256.New, pubkeySecret)
-		h.Write([]byte(decodedPath))
-		expected := h.Sum(nil)
-		if !bytes.Equal(expected[0:16], mac) {
-			http.Error(w, "mac doesn't match", http.StatusUnauthorized)
-			return
-		}
-
-		imgproxyURL := "http://imgproxy/insecure" + path
 		resp, err := imgproxySocketClient.Get(imgproxyURL)
 		if err != nil {
 			log.Error().Err(err).Msg("imgproxy request failed")
@@ -245,7 +255,8 @@ func startImgproxy() {
 		}
 
 		state.mu.Lock()
-		if state.cmd == cmd {
+		current := state.cmd == cmd
+		if current {
 			state.cmd = nil
 			state.running = false
 			if err != nil {
@@ -254,7 +265,9 @@ func startImgproxy() {
 		}
 		state.mu.Unlock()
 
-		if err != nil && global.Settings.Imgproxy.Enabled {
+		// only react to the exit of the process we are actually tracking;
+		// a stale goroutine from a previous instance must not disable a new one
+		if current && err != nil && global.Settings.Imgproxy.Enabled {
 			disableImgproxyWithError(err)
 		}
 	}(cmd)
@@ -350,6 +363,10 @@ func secretHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if tag := evt.Tags.Find("u"); tag == nil || tag[1] != global.Settings.HTTPScheme()+global.Settings.Domain+r.URL.Path {
 		http.Error(w, "invalid url", http.StatusUnauthorized)
+		return
+	}
+	if !pyramid.IsMember(evt.PubKey) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 

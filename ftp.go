@@ -24,7 +24,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/mmm"
-	blossom_lib "fiatjaf.com/nostr/nipb0/blossom"
+	blossom_lib "fiatjaf.com/nostr/nipb7/blossom"
 	"github.com/fiatjaf/pyramid/blossom"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/liamg/magic"
@@ -121,7 +121,7 @@ func handleSFTP(conn net.Conn, config *ssh.ServerConfig) {
 
 		go func(in <-chan *ssh.Request) {
 			for req := range in {
-				if req.Type == "subsystem" && string(req.Payload[4:]) == "sftp" {
+				if req.Type == "subsystem" && len(req.Payload) > 4 && string(req.Payload[4:]) == "sftp" {
 					req.Reply(true, nil)
 
 					server := sftp.NewRequestServer(channel, sftp.Handlers{
@@ -220,6 +220,9 @@ func (vfs SFTPVirtualFileSystem) Fileread(r *sftp.Request) (io.ReaderAt, error) 
 		// }
 
 		spl := strings.Split(path[2], ".")
+		if len(spl) < 2 {
+			return nil, os.ErrNotExist
+		}
 		hash := spl[0]
 		ext := "." + spl[1]
 
@@ -305,6 +308,9 @@ func (vfs SFTPVirtualFileSystem) Filecmd(r *sftp.Request) error {
 		switch path[0] {
 		case "blossom":
 			spl := strings.Split(path[2], ".")
+			if len(spl) < 2 {
+				return os.ErrNotExist
+			}
 			hash := spl[0]
 			ext := "." + spl[1]
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"fiatjaf.com/nostr"
 	"github.com/puzpuzpuz/xsync/v3"
@@ -21,6 +22,12 @@ var (
 	AbsoluteKey nostr.PubKey
 	Members     = xsync.NewMapOf[nostr.PubKey, Member]()
 	Roles       = xsync.NewMapOf[string, Role]()
+
+	// actionsMu serializes management actions: each one is checked against the
+	// current tree and only then applied to it, so two of them running at the
+	// same time could both pass checks that the other invalidates -- two invites
+	// could create a parent cycle, which makes the tree walks here recurse forever
+	actionsMu sync.Mutex
 )
 
 type Member struct {
@@ -252,6 +259,16 @@ type managementAction struct {
 }
 
 func AddAction(type_ Action, author nostr.PubKey, target nostr.PubKey) error {
+	actionsMu.Lock()
+	defer actionsMu.Unlock()
+
+	// the zero pubkey is what invalid or missing input decodes to (both in HTTP forms
+	// and in nostr tags), so it must never make it into the tree: an unauthenticated
+	// visitor is also seen as the zero pubkey, so a zero member would make everybody a member
+	if author == nostr.ZeroPK || target == nostr.ZeroPK {
+		return fmt.Errorf("invalid pubkey")
+	}
+
 	if !IsMember(author) && author != AbsoluteKey {
 		return fmt.Errorf("pubkey %s isn't an active member", author)
 	}
@@ -276,7 +293,11 @@ func AddAction(type_ Action, author nostr.PubKey, target nostr.PubKey) error {
 			return fmt.Errorf("not an ancestor, can't drop")
 		}
 	case ActionLeave:
-		// anyone can leave anytime
+		// anyone can leave anytime, but only on their own behalf: leaving erases the
+		// target and everybody who descends from it, so it can't be done to others
+		if target != author {
+			return fmt.Errorf("can't make someone else leave")
+		}
 	case ActionDisable:
 		if !IsAncestorOf(author, target) {
 			return fmt.Errorf("not an ancestor, can't disable")
@@ -299,6 +320,9 @@ func AddAction(type_ Action, author nostr.PubKey, target nostr.PubKey) error {
 }
 
 func AddRoleAction(type_ Action, author nostr.PubKey, roleID, label, desc, color string, order int) error {
+	actionsMu.Lock()
+	defer actionsMu.Unlock()
+
 	if !IsRoot(author) {
 		return fmt.Errorf("only root users can manage roles")
 	}
@@ -316,6 +340,9 @@ func AddRoleAction(type_ Action, author nostr.PubKey, roleID, label, desc, color
 }
 
 func AddRoleAssignmentAction(type_ Action, author nostr.PubKey, target nostr.PubKey, roleID string) error {
+	actionsMu.Lock()
+	defer actionsMu.Unlock()
+
 	if !IsRoot(author) {
 		return fmt.Errorf("only root users can assign roles")
 	}
@@ -332,6 +359,9 @@ func AddRoleAssignmentAction(type_ Action, author nostr.PubKey, target nostr.Pub
 }
 
 func LoadManagement() error {
+	actionsMu.Lock()
+	defer actionsMu.Unlock()
+
 	file, err := os.Open(filepath.Join(global.S.DataPath, "management.jsonl"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -444,30 +474,38 @@ func applyAction(action managementAction) {
 		// when leaving unilaterally breaks all relationships it may still have with parents (and children too)
 		Members.Delete(target)
 
-		// recursively remove nodes that only have target as ancestor
-		var removeDescendants func(nostr.PubKey)
-		removeDescendants = func(dropped nostr.PubKey) {
+		// remove links to dropped nodes, deleting any node left without parents,
+		// repeating until the member set stabilises. a worklist (instead of
+		// recursion during iteration) makes the result order-independent, since
+		// a node can lose its last parent only after another parent is dropped.
+		dropped := []nostr.PubKey{target}
+		for len(dropped) > 0 {
+			d := dropped[len(dropped)-1]
+			dropped = dropped[:len(dropped)-1]
+
 			for nodeKey, node := range Members.Range {
-				// remove links from dropped node to this node
+				changed := false
 				for i := 0; i < len(node.Parents); {
-					if node.Parents[i] == dropped {
+					if node.Parents[i] == d {
 						node.Parents[i] = node.Parents[len(node.Parents)-1]
 						node.Parents = node.Parents[:len(node.Parents)-1]
+						changed = true
 					} else {
 						i++
 					}
 				}
+				if !changed {
+					continue
+				}
 
-				// if nodeKey has no parents left, remove it and recurse
 				if len(node.Parents) == 0 {
 					Members.Delete(nodeKey)
-					removeDescendants(nodeKey)
+					dropped = append(dropped, nodeKey)
 				} else {
 					Members.Store(nodeKey, node)
 				}
 			}
 		}
-		removeDescendants(target)
 	case ActionDisable:
 		// mark as removed but keep in the tree so children continue to exist
 		Members.Compute(target, func(o Member, loaded bool) (Member, bool) {
@@ -482,6 +520,8 @@ func applyAction(action managementAction) {
 	}
 }
 
+// appendActionToFile persists an action and applies it. it doesn't take actionsMu:
+// its callers already hold it, so that the checks they made still hold here.
 func appendActionToFile(action managementAction) error {
 	b, err := json.Marshal(action)
 	if err != nil {
@@ -497,5 +537,9 @@ func appendActionToFile(action managementAction) error {
 		return err
 	}
 
-	return LoadManagement()
+	// apply only the new action: replaying the whole file here would
+	// re-apply all previous actions on top of the current state,
+	// duplicating parent links on every append
+	applyAction(action)
+	return nil
 }

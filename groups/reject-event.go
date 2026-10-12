@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
@@ -45,8 +46,22 @@ func RejectEvent(ctx context.Context, event nostr.Event) (reject bool, msg strin
 	if event.Kind == nostr.KindSimpleGroupCreateGroup {
 		if isAuthed {
 			if group != nil {
-				// well, as long as the group doesn't exist, of course
 				return true, "duplicate: group already exists"
+			}
+
+			// group ids are used as filesystem paths for search indexes, so forbid
+			// anything that could escape the data directory (see ensureIndex).
+			if strings.Contains(groupId, "..") {
+				return true, "invalid: group id must not contain '..'"
+			}
+
+			if global.IL.DeletedGroups != nil {
+				for range global.IL.DeletedGroups.QueryEvents(nostr.Filter{
+					Kinds: []nostr.Kind{nostr.KindSimpleGroupCreateGroup},
+					Tags:  nostr.TagMap{"h": []string{groupId}},
+				}, 1) {
+					return true, "duplicate: a deleted group with this id exists"
+				}
 			}
 
 			if !pyramid.IsMember(event.PubKey) {
@@ -97,6 +112,7 @@ func RejectEvent(ctx context.Context, event nostr.Event) (reject bool, msg strin
 		for removed := range global.IL.Main.QueryEvents(nostr.Filter{
 			Kinds: []nostr.Kind{nostr.KindSimpleGroupRemoveUser},
 			Tags: nostr.TagMap{
+				"h": []string{groupId},
 				"p": []string{event.PubKey.Hex()},
 			},
 		}, 1) {
@@ -160,6 +176,22 @@ func RejectEvent(ctx context.Context, event nostr.Event) (reject bool, msg strin
 				return true, "a private group must also be closed"
 			}
 		case nip29.PutUser:
+			if !isPrimaryRole {
+				// moderators can't grant roles, and can't change the roles of users who already have them
+				group.mu.RLock()
+				for _, t := range a.Targets {
+					if len(t.RoleNames) > 0 {
+						group.mu.RUnlock()
+						return true, "restricted: only admins can add or change user roles"
+					}
+					if currentRoles, isMember := group.Members[t.PubKey]; isMember && len(currentRoles) > 0 {
+						group.mu.RUnlock()
+						return true, "restricted: only admins can modify users with roles"
+					}
+				}
+				group.mu.RUnlock()
+			}
+
 			ineffective := true
 			group.mu.RLock()
 			for _, t := range a.Targets {
@@ -174,6 +206,18 @@ func RejectEvent(ctx context.Context, event nostr.Event) (reject bool, msg strin
 			}
 			group.mu.RUnlock()
 		case nip29.RemoveUser:
+			if !isPrimaryRole {
+				// moderators can't remove admins or other moderators
+				group.mu.RLock()
+				for _, t := range a.Targets {
+					if roles, isMember := group.Members[t]; isMember && len(roles) > 0 {
+						group.mu.RUnlock()
+						return true, "restricted: only admins can remove admins or moderators"
+					}
+				}
+				group.mu.RUnlock()
+			}
+
 			ineffective := true
 			group.mu.RLock()
 			for _, t := range a.Targets {
@@ -190,7 +234,7 @@ func RejectEvent(ctx context.Context, event nostr.Event) (reject bool, msg strin
 		case nip29.DeleteEvent:
 			ineffective := true
 			for target := range global.IL.Main.QueryEvents(nostr.Filter{IDs: a.Targets}, len(a.Targets)) {
-				if hTag := target.Tags.Find("h"); hTag[1] == groupId {
+				if hTag := target.Tags.Find("h"); hTag != nil && hTag[1] == groupId {
 					ineffective = false
 					break
 				}

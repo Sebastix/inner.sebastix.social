@@ -24,7 +24,7 @@ var assets embed.FS
 var (
 	S struct {
 		Port          string `envconfig:"PORT" default:"3366"`
-		SFTPPort      string `envconvig:"SFTP_PORT" default:"2222"`
+		SFTPPort      string `envconfig:"SFTP_PORT" default:"2222"`
 		Host          string `envconfig:"HOST" default:"localhost"`
 		DataPath      string `envconfig:"DATA_PATH" default:"./data"`
 		NoAutoUpdates bool   `envconfig:"NO_AUTO_UPDATES"`
@@ -91,6 +91,7 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'personal': %w", err)
 	}
 
+	// TODO: delete this eventually
 	if err := migrateGroupsLayer(); err != nil {
 		return fmt.Errorf("groups migration: %w", err)
 	}
@@ -115,6 +116,11 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'inbox': %w", err)
 	}
 
+	IL.InboxReports, err = MMMM.EnsureLayer("inbox-reports")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'inbox-reports': %w", err)
+	}
+
 	IL.Secret, err = MMMM.EnsureLayer("secret")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'secret': %w", err)
@@ -130,6 +136,11 @@ func Init() error {
 		return fmt.Errorf("failed to ensure 'moderated': %w", err)
 	}
 
+	IL.Network, err = MMMM.EnsureLayer("network")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'network': %w", err)
+	}
+
 	IL.Scheduled, err = MMMM.EnsureLayer("scheduled")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'scheduled': %w", err)
@@ -143,6 +154,11 @@ func Init() error {
 	IL.OperatorBucket, err = MMMM.EnsureLayer("operator")
 	if err != nil {
 		return fmt.Errorf("failed to ensure 'operator': %w", err)
+	}
+
+	IL.DeletedGroups, err = MMMM.EnsureLayer("deleted-groups")
+	if err != nil {
+		return fmt.Errorf("failed to ensure 'deleted-groups': %w", err)
 	}
 
 	for _, url := range []string{"https://api.ipify.org", "https://httpbin.org/ip"} {
@@ -232,6 +248,7 @@ var IL struct {
 	PendingAccess *mmm.IndexingLayer
 	Personal      *mmm.IndexingLayer
 	Inbox         *mmm.IndexingLayer
+	InboxReports  *mmm.IndexingLayer
 
 	// only nip44-encrypted DMs for now
 	Secret *mmm.IndexingLayer
@@ -239,6 +256,9 @@ var IL struct {
 	// moderated relay
 	ModerationQueue *mmm.IndexingLayer
 	Moderated       *mmm.IndexingLayer
+
+	// web-of-trust relay
+	Network *mmm.IndexingLayer
 
 	// algo
 	Popular   *mmm.IndexingLayer
@@ -252,4 +272,8 @@ var IL struct {
 
 	// operator registrations
 	OperatorBucket *mmm.IndexingLayer
+
+	// events from soft-deleted groups, including the kind-9008 delete-group events.
+	// only used internally and via the root-only /database inspector; not exposed by any relay.
+	DeletedGroups *mmm.IndexingLayer
 }

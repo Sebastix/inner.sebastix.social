@@ -54,7 +54,7 @@ func handleSign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reg.CentralPubKey != evt.PubKey.Hex() {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		http.Error(w, "pubkey does not match registration", http.StatusUnauthorized)
 		return
 	}
 
@@ -177,15 +177,6 @@ func handleSign(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			now := nostr.Now()
-			if evtToSign.CreatedAt < now-80 {
-				http.Error(w, "can't sign event in past", http.StatusBadRequest)
-				return
-			}
-			if evtToSign.CreatedAt > now+80 {
-				http.Error(w, "can't sign event in future", http.StatusBadRequest)
-				return
-			}
 			if session.groupCommitment[0] == nil {
 				http.Error(w, "missing group commitment", http.StatusBadRequest)
 				return

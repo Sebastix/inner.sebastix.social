@@ -136,7 +136,7 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							reject(new Error("websocket connection error"))
 						}
 					})
-				}
+				},
 			}` }
 		>
 			<h1 class="text-4xl font-bold mb-4 font-[family-name:var(--primary-font)]">groups</h1>
@@ -157,6 +157,9 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 								<thead class="bg-stone-50 dark:bg-stone-800">
 									<tr>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group id</th>
+										if global.Settings.Groups.NIPAD.Enabled {
+											<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">nickname</th>
+										}
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group</th>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">members</th>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">moderators</th>
@@ -185,6 +188,19 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														class="text-stone-600 dark:text-stone-400 hover:underline"
 													>{ group.Address.ID }</a>
 												</td>
+												if global.Settings.Groups.NIPAD.Enabled {
+													<td class="px-4 py-3 text-sm text-center">
+														if name := groupNickname(group.Address.ID); name != "" {
+															<a
+																href={ global.Settings.HTTPScheme() + global.Settings.Domain + "/" + name }
+																target="_blank"
+																class="text-emerald-600 dark:text-emerald-400 hover:underline"
+															>{ name }</a>
+														} else {
+															<span class="text-stone-400 dark:text-stone-600">—</span>
+														}
+													</td>
+												}
 												<td class="px-4 py-3 text-sm text-center">
 													<a
 														href={ "/groups/" + group.Address.ID }
@@ -274,6 +290,9 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 								<thead class="bg-stone-50 dark:bg-stone-800">
 									<tr>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group id</th>
+										if global.Settings.Groups.NIPAD.Enabled {
+											<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">nickname</th>
+										}
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">group</th>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">members</th>
 										<th class="px-1 py-3 text-xs font-medium text-stone-500 dark:text-stone-400">moderators</th>
@@ -295,6 +314,19 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 														class="text-stone-600 dark:text-stone-400 hover:underline"
 													>{ group.Address.ID }</a>
 												</td>
+												if global.Settings.Groups.NIPAD.Enabled {
+													<td class="px-4 py-3 text-sm text-center">
+														if name := groupNickname(group.Address.ID); name != "" {
+															<a
+																href={ global.Settings.HTTPScheme() + global.Settings.Domain + "/" + name }
+																target="_blank"
+																class="text-emerald-600 dark:text-emerald-400 hover:underline"
+															>{ name }</a>
+														} else {
+															<span class="text-stone-400 dark:text-stone-600">—</span>
+														}
+													</td>
+												}
 												<td class="px-4 py-3 text-sm text-center">
 													<a
 														href={ "/groups/" + group.Address.ID }
@@ -495,9 +527,156 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 							</button>
 						</form>
 					</div>
+					// import group section
+					<div class="mt-8">
+						<h3 class="text-lg font-semibold dark:text-stone-200">import existing group</h3>
+						<form method="POST" action="/groups/import" class="space-y-4">
+							<p class="text-sm text-stone-600 dark:text-stone-400">
+								paste the group's naddr (NIP-19 for kind 39000) or its address in the form
+								<code class="px-1 rounded bg-stone-100 dark:bg-stone-800">&lt;domain&gt;'&lt;id&gt;</code>. the group
+								will be fetched from the relay in the address and imported.
+							</p>
+							<div>
+								<label for="import_address" class="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1">
+									group address
+								</label>
+								<input
+									type="text"
+									id="import_address"
+									name="address"
+									class="w-full px-3 py-2 border border-stone-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-500"
+								/>
+							</div>
+							<div class="space-y-2">
+								<p class="text-sm font-medium text-stone-700 dark:text-stone-300">admin strategy</p>
+								<label class="flex items-start gap-2 cursor-pointer">
+									<input
+										type="radio"
+										name="admin_mode"
+										value="keep"
+										checked
+										class="mt-0.5 h-4 w-4 border-stone-300 text-stone-600 focus:ring-stone-500"
+									/>
+									<span class="text-sm text-stone-700 dark:text-stone-300">
+										keep current admins — the source group's admins are preserved, with their roles
+										renamed to <code class="px-1 rounded bg-stone-100 dark:bg-stone-800">admin</code> /
+										<code class="px-1 rounded bg-stone-100 dark:bg-stone-800">moderator</code>
+									</span>
+								</label>
+								<label class="flex items-start gap-2 cursor-pointer">
+									<input
+										type="radio"
+										name="admin_mode"
+										value="reset"
+										class="mt-0.5 h-4 w-4 border-stone-300 text-stone-600 focus:ring-stone-500"
+									/>
+									<span class="text-sm text-stone-700 dark:text-stone-300">
+										reset admins to me — every role assignment is cleared and i become the only
+										admin
+									</span>
+								</label>
+							</div>
+							<details class="rounded-lg border border-stone-200 dark:border-stone-700 p-3">
+								<summary class="cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">
+									rename roles
+								</summary>
+								<p class="text-sm text-stone-600 dark:text-stone-400 mt-2 mb-3">
+									when the source group uses role names different from
+									<code class="px-1 rounded bg-stone-100 dark:bg-stone-800">admin</code> and
+									<code class="px-1 rounded bg-stone-100 dark:bg-stone-800">moderator</code>, specify which
+									source role should become each one.
+								</p>
+								<div class="space-y-3">
+									<div>
+										<label for="import_primary_from" class="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1">
+											source role → admin
+										</label>
+										<input
+											type="text"
+											id="import_primary_from"
+											name="primary_from"
+											placeholder="e.g. owner"
+											class="w-full px-3 py-2 border border-stone-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-500"
+										/>
+									</div>
+									<div>
+										<label for="import_secondary_from" class="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1">
+											source role → moderator
+										</label>
+										<input
+											type="text"
+											id="import_secondary_from"
+											name="secondary_from"
+											placeholder="e.g. mod"
+											class="w-full px-3 py-2 border border-stone-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-500"
+										/>
+									</div>
+								</div>
+							</details>
+							<details class="rounded-lg border border-stone-200 dark:border-stone-700 p-3">
+								<summary class="cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">
+									special authentication
+								</summary>
+								<div x-data="{ useBunker: false }" class="mt-2 space-y-3">
+									<p class="text-sm text-stone-600 dark:text-stone-400">
+										this is only necessary if the source group is private and can't be read by this server.
+									</p>
+									<label class="flex items-center gap-2 cursor-pointer">
+										<input
+											type="checkbox"
+											x-model="useBunker"
+											class="h-4 w-4 border-stone-300 text-stone-600 focus:ring-stone-500"
+										/>
+										<span class="text-sm text-stone-700 dark:text-stone-300">
+											use temporary bunker
+										</span>
+									</label>
+									<p class="text-sm text-stone-600 dark:text-stone-400">
+										as an alternative to this bunker stuff you can also add this relay's self-pubkey <span class="font-mono truncate inline-block w-32 align-bottom">{ global.Settings.RelayInternalSecretKey.Public().Hex() }</span> as a member to the target group, so it will be able to read.
+									</p>
+									<div>
+										<label for="import_bunker" class="block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1">
+											bunker URL
+										</label>
+										<input
+											type="text"
+											id="import_bunker"
+											name="bunker"
+											placeholder="bunker://..."
+											:disabled="!useBunker"
+											class="w-full px-3 py-2 border border-stone-300 dark:border-stone-600 rounded-lg bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-500 disabled:opacity-50"
+										/>
+										<p class="text-sm text-stone-600 dark:text-stone-400">
+											paste a
+											temporary bunker URL here so the fetch authenticates as you instead of as
+											this relay's internal key.
+										</p>
+									</div>
+								</div>
+							</details>
+							<button
+								type="submit"
+								class="cursor-pointer px-4 py-2 rounded themed:bg-[var(--extra-color)] themed:hover:bg-[rgb(from_var(--extra-color)_r_g_b_/_80%)] themed:text-white light:bg-stone-200 light:hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+							>
+								import group
+							</button>
+						</form>
+					</div>
 				}
 			}
 			if pyramid.IsRoot(loggedUser) {
+				<div class="mt-12">
+					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">deleted groups</h3>
+					<p class="text-sm text-stone-600 dark:text-stone-400 mb-3">
+						view soft-deleted groups whose events are kept in the <code>deleted-groups</code> internal layer.
+					</p>
+					<a
+						href="/groups/deleted"
+						class="inline-block px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+					>
+						view deleted groups
+					</a>
+				</div>
 				<div class="mt-24">
 					<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">configuration</h3>
 					if !global.Settings.Groups.Enabled {
@@ -655,6 +834,32 @@ templ homeGroupsPage(loggedUser nostr.PubKey) {
 									save LiveKit settings
 								</button>
 							</form>
+						</details>
+						<details>
+							<summary class="mb-4 cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">NIP-AD group nicknames</summary>
+							if !global.Settings.Groups.NIPAD.Enabled {
+								<form class="my-4" method="POST" action="/groups/nipad/enable">
+									<p class="text-sm text-stone-600 dark:text-stone-400 mb-3">
+										enables group nicknames: each group admin can register a short word that identifies
+										the group (e.g. <code class="px-1 rounded bg-stone-100 dark:bg-stone-800">/foo</code>).
+									</p>
+									<button
+										type="submit"
+										class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+									>
+										enable
+									</button>
+								</form>
+							} else {
+								<form class="my-4" method="POST" action="/groups/nipad/disable">
+									<button
+										type="submit"
+										class="cursor-pointer px-4 py-2 rounded bg-stone-200 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600 text-stone-700 dark:text-stone-300 font-medium"
+									>
+										disable
+									</button>
+								</form>
+							}
 						</details>
 						<details>
 							<summary class="mb-4 cursor-pointer text-sm font-medium text-stone-600 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200">disable groups</summary>

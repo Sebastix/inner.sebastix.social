@@ -1,8 +1,6 @@
 package uppermost
 
 import (
-	"fmt"
-
 	"fiatjaf.com/nostr"
 
 	"github.com/fiatjaf/pyramid/global"
@@ -17,7 +15,7 @@ templ uppermostPage(loggedUser nostr.PubKey) {
 				if !global.Settings.Uppermost.IsIconDefault() {
 					<img src={ global.Settings.Uppermost.GetIcon() } class="h-8 w-8 mr-2"/>
 				}
-				<h1 class="text-4xl font-bold">{ global.Settings.Uppermost.GetName() }</h1>
+				<h1 class="text-4xl font-bold font-[family-name:var(--primary-font)]">{ global.Settings.Uppermost.GetName() }</h1>
 			</div>
 			if global.Settings.Uppermost.Enabled && pyramid.IsRoot(loggedUser) {
 				@layout.LandlubberButton(global.Settings.Uppermost.HTTPBasePath)
@@ -25,9 +23,16 @@ templ uppermostPage(loggedUser nostr.PubKey) {
 		</div>
 		<div class="space-y-4 text-gray-700 dark:text-gray-300">
 			<p class="text-lg leading-relaxed">{ global.Settings.Uppermost.GetDescription() }</p>
+			<div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+				<h2 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">how the uppermost relay works:</h2>
+				<ul class="list-disc list-inside space-y-1 text-sm">
+					<li>it's similar to the popular relay, but it doesn't count replies against the threshold</li>
+					<li>and generally have a higher threshold for notes to qualify</li>
+				</ul>
+			</div>
 			if global.Settings.Uppermost.Enabled {
 				<a
-					class="mb-4 inline-flex items-center gap-2 text-white font-semibold px-4 py-2 rounded-xl shadow-lg transform hover:scale-105 themed:bg-[var(--accent-color)] unthemed:bg-blue-500 unthemed:hover:bg-blue-600"
+					class="mb-4 inline-flex items-center gap-2 px-2 py-1 text-blue-600 dark:text-blue-400 hover:underline themed:text-[var(--accent-color)]"
 					target="_blank"
 					href={ global.Settings.BrowseURI }
 					x-init="$el.href = $el.href.replace(/({|%7B)url(}|%7D)/, encodeURIComponent(location.href.replace('http', 'ws').split('/').slice(0, 4).join('/')))"
@@ -43,7 +48,7 @@ templ uppermostPage(loggedUser nostr.PubKey) {
 							method="POST"
 							action="/settings"
 							x-data={ `{
-								percentThreshold: ` + fmt.Sprint(global.Settings.Uppermost.PercentThreshold) + `,
+								threshold: ` + global.JSONString(global.Settings.Uppermost.Threshold.Display()) + `,
 								saved: false,
 								async saveSettings() {
 									const response = await fetch(this.$refs.form.action, {
@@ -60,14 +65,13 @@ templ uppermostPage(loggedUser nostr.PubKey) {
 						>
 							<h3 class="text-lg font-semibold mb-4 dark:text-stone-200">uppermost relay</h3>
 							<div>
-								<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="uppermost_percent_threshold">percent threshold (%)</label>
+								<label class="block text-sm font-medium mb-2 dark:text-stone-300" for="uppermost_threshold">threshold (percent or number)</label>
 								<input
-									type="number"
-									name="uppermost_percent_threshold"
-									min="0"
-									max="100"
+									type="text"
+									name="uppermost_threshold"
+									placeholder="e.g. 3 or 33%"
 									class="w-full px-4 py-2 rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-700 dark:text-stone-100 mb-4"
-									x-model="percentThreshold"
+									x-model="threshold"
 									@blur="saveSettings()"
 								/>
 							</div>

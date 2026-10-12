@@ -186,6 +186,11 @@ keys:
 	go func() {
 		err := cmd.Wait()
 
+		// signal the exit before taking the lock: StartEmbeddedLiveKit holds
+		// the mutex for its whole duration, so locking first would deadlock the
+		// "exited immediately" detection below
+		exited <- err
+
 		embeddedLiveKit.mu.Lock()
 		defer embeddedLiveKit.mu.Unlock()
 
@@ -197,7 +202,6 @@ keys:
 				log.Error().Err(err).Msg("embedded livekit server exited")
 			}
 		}
-		exited <- err
 	}()
 
 	select {
@@ -317,12 +321,6 @@ func ensureLiveKitBinary(release livekitRelease) error {
 	}
 
 	// download
-	out, err := os.CreateTemp(".", "livekit-archive-*")
-	if err != nil {
-		return fmt.Errorf("create livekit archive: %w", err)
-	}
-	defer out.Close()
-
 	resp, err := (&http.Client{Timeout: 60 * time.Second}).Get(assetURL)
 	if err != nil {
 		return fmt.Errorf("download livekit binary: %w", err)

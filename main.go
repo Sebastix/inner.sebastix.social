@@ -28,6 +28,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fiatjaf/pyramid/blossom"
+	"github.com/fiatjaf/pyramid/bookmarks"
 	"github.com/fiatjaf/pyramid/favorites"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/global/relays"
@@ -36,7 +37,9 @@ import (
 	"github.com/fiatjaf/pyramid/imgproxy"
 	"github.com/fiatjaf/pyramid/inbox"
 	"github.com/fiatjaf/pyramid/internal"
+	"github.com/fiatjaf/pyramid/linkpreview"
 	"github.com/fiatjaf/pyramid/moderated"
+	"github.com/fiatjaf/pyramid/network"
 	"github.com/fiatjaf/pyramid/nsite"
 	"github.com/fiatjaf/pyramid/operator"
 	"github.com/fiatjaf/pyramid/paywall"
@@ -141,20 +144,30 @@ func main() {
 	}
 
 	// init basic http routes
-	relay.Router().HandleFunc("/action", actionHandler)
-	relay.Router().HandleFunc("/settings", settingsHandler)
+	relay.Router().HandleFunc("GET /action", actionHandler)
+	relay.Router().HandleFunc("POST /action", actionHandler)
+	relay.Router().HandleFunc("GET /settings", settingsHandler)
+	relay.Router().HandleFunc("POST /settings", settingsHandler)
 	relay.Router().HandleFunc("GET /clients", detailsHandler)
 	relay.Router().HandleFunc("GET /clients/{clientId}", clientDetailsHandler)
 	relay.Router().HandleFunc("GET /event/{db}/{id}", databaseEventJSONHandler)
 	relay.Router().HandleFunc("DELETE /database/{db}/{id}", deleteDatabaseEventHandler)
+	relay.Router().HandleFunc("POST /database/delete", deleteDatabaseEventsHandler)
 	relay.Router().HandleFunc("GET /database", databaseHandler)
+	relay.Router().HandleFunc("POST /database", databaseHandler)
+	relay.Router().HandleFunc("GET /database/inject", injectHandler)
+	relay.Router().HandleFunc("POST /database/inject", injectHandler)
 	relay.Router().HandleFunc("GET /database/blocks", databaseBlocksHandler)
 	relay.Router().HandleFunc("POST /database/blocks/defrag", databaseBlocksDefragHandler)
 	relay.Router().HandleFunc("GET /log", logHandler)
 	relay.Router().HandleFunc("/search/reindex", search.StreamingReindexHTML)
 	relay.Router().HandleFunc("GET /u", memberPageHandler)
+	relay.Router().HandleFunc("POST /u", memberPageHandler)
 	relay.Router().HandleFunc("GET /u/{pubkey}", memberPageHandler)
-	relay.Router().HandleFunc("GET /u/sync", syncHandler)
+	relay.Router().HandleFunc("POST /u/sync", syncHandler)
+	relay.Router().HandleFunc("/wot", wot.PageHandler)
+	relay.Router().HandleFunc("/wot/", wot.PageHandler)
+	relay.Router().HandleFunc("POST /wot/check-wot", wot.CheckHandler)
 	relay.Router().HandleFunc("GET /stats", statsHandler)
 	relay.Router().HandleFunc("/update", updateHandler)
 	relay.Router().HandleFunc("/restart", restartHandler)
@@ -179,8 +192,11 @@ func main() {
 	stream.Init(relay)
 	operator.Init(relay)
 	imgproxy.Init()
+	linkpreview.Init()
 	favorites.Init()
+	bookmarks.Init()
 	inbox.Init()
+	network.Init()
 	nsite.Init()
 
 	// start background web-of-trust computation (needed by inbox and operator)
@@ -487,6 +503,11 @@ func run(ctx context.Context) error {
 	mux.Handle("/"+global.Settings.Favorites.HTTPBasePath+"/", favorites.Relay)
 	mux.Handle("/"+global.Settings.Favorites.HTTPBasePath, favorites.Relay)
 
+	mux.Handle("/"+global.Settings.Bookmarks.HTTPBasePath+"/all/", bookmarks.AllRelay)
+	mux.Handle("/"+global.Settings.Bookmarks.HTTPBasePath+"/all", bookmarks.AllRelay)
+	mux.Handle("/"+global.Settings.Bookmarks.HTTPBasePath+"/", bookmarks.Relay)
+	mux.Handle("/"+global.Settings.Bookmarks.HTTPBasePath, bookmarks.Relay)
+
 	mux.Handle("/blossom/", blossom.Handler)
 	mux.Handle("/blossom", blossom.Handler)
 
@@ -503,8 +524,15 @@ func run(ctx context.Context) error {
 	mux.Handle("/imgproxy/", imgproxy.Handler)
 	mux.Handle("/imgproxy", imgproxy.Handler)
 
+	mux.Handle("/linkpreview/", linkpreview.Handler)
+	mux.Handle("/linkpreview", linkpreview.Handler)
+	mux.Handle("POST /link/preview", linkpreview.Handler)
+
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath+"/", inbox.Relay)
 	mux.Handle("/"+global.Settings.Inbox.HTTPBasePath, inbox.Relay)
+
+	mux.Handle("/"+global.Settings.Network.HTTPBasePath+"/", network.Relay)
+	mux.Handle("/"+global.Settings.Network.HTTPBasePath, network.Relay)
 
 	mux.Handle("/"+global.Settings.Popular.HTTPBasePath+"/", popular.Relay)
 	mux.Handle("/"+global.Settings.Popular.HTTPBasePath, popular.Relay)
@@ -527,7 +555,18 @@ func run(ctx context.Context) error {
 	mux.Handle("/scheduled/", scheduled)
 	mux.Handle("/scheduled", scheduled)
 
-	mux.Handle("/", relay)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// nip-ad group nickname redirects: /<nickname> -> /groups/<groupId>
+		if global.Settings.Groups.NIPAD.Enabled && r.Header.Get("Upgrade") != "websocket" {
+			if nickname := strings.Trim(r.URL.Path, "/"); nickname != "" && !strings.Contains(nickname, "/") {
+				if groupId, ok := groups.ResolveNickname(nickname); ok {
+					http.Redirect(w, r, "/groups/"+groupId, http.StatusFound)
+					return
+				}
+			}
+		}
+		relay.ServeHTTP(w, r)
+	}))
 
 	mainHandler := setupCheckMiddleware(mux)
 	externalHandler := ipBlockMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -559,6 +598,12 @@ func run(ctx context.Context) error {
 			subRelay, basePath = personal.Relay, global.Settings.Personal.HTTPBasePath
 		case global.Settings.Favorites.HTTPDomain:
 			subRelay, basePath = favorites.Relay, global.Settings.Favorites.HTTPBasePath
+		case global.Settings.Bookmarks.HTTPDomain:
+			if strings.HasPrefix(r.URL.Path, "/all") {
+				subRelay, basePath = bookmarks.AllRelay, global.Settings.Bookmarks.HTTPBasePath+"/all"
+			} else {
+				subRelay, basePath = bookmarks.Relay, global.Settings.Bookmarks.HTTPBasePath
+			}
 		case global.Settings.Inbox.HTTPDomain:
 			subRelay, basePath = inbox.Relay, global.Settings.Inbox.HTTPBasePath
 		case global.Settings.Popular.HTTPDomain:
@@ -567,6 +612,8 @@ func run(ctx context.Context) error {
 			subRelay, basePath = uppermost.Relay, global.Settings.Uppermost.HTTPBasePath
 		case global.Settings.Moderated.HTTPDomain:
 			subRelay, basePath = moderated.Relay, global.Settings.Moderated.HTTPBasePath
+		case global.Settings.Network.HTTPDomain:
+			subRelay, basePath = network.Relay, global.Settings.Network.HTTPBasePath
 		}
 		if subRelay != nil {
 			if r.Header.Get("Upgrade") == "websocket" ||
@@ -616,10 +663,12 @@ func run(ctx context.Context) error {
 			global.Settings.Internal.HTTPDomain,
 			global.Settings.Personal.HTTPDomain,
 			global.Settings.Favorites.HTTPDomain,
+			global.Settings.Bookmarks.HTTPDomain,
 			global.Settings.Inbox.HTTPDomain,
 			global.Settings.Popular.HTTPDomain,
 			global.Settings.Uppermost.HTTPDomain,
 			global.Settings.Moderated.HTTPDomain,
+			global.Settings.Network.HTTPDomain,
 		} {
 			if domain != "" {
 				hosts = append(hosts, domain)
@@ -784,6 +833,11 @@ func run(ctx context.Context) error {
 
 		g.Go(func() error {
 			<-ctx.Done()
+
+			groups.ShutdownEmbeddedLiveKit()
+			global.End()
+			search.End()
+
 			if err := server.Shutdown(context.Background()); err != nil {
 				return err
 			}

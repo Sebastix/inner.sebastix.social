@@ -3,6 +3,7 @@ package global
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 type UserSettings struct {
 	// relay metadata
 	Domain           string   `json:"domain"`
+	AlternateDomains []string `json:"alternate_domains,omitempty"`
 	RelayName        string   `json:"relay_name"`
 	RelayDescription string   `json:"relay_description"`
 	RelayContact     string   `json:"relay_contact"`
@@ -35,15 +37,16 @@ type UserSettings struct {
 	} `json:"theme"`
 
 	// general
-	BrowseURI                string `json:"browse_uri"`
-	LinkURL                  string `json:"link_url"`
-	MaxInvitesPerPerson      int    `json:"max_invites_per_person,omitempty"`
-	MaxInvitesAtEachLevel    []int  `json:"max_invites_at_each_level,omitempty"`
-	RequireCurrentTimestamp  bool   `json:"require_current_timestamp"`
-	AcceptScheduledEvents    bool   `json:"accept_scheduled_events"`
-	AllowAccessRequest       bool   `json:"allow_access_request"`
-	AllowEphemeralFromAnyone bool   `json:"allow_ephemeral_from_anyone"`
-	ValidateSchema           bool   `json:"validate_schema"`
+	BrowseURI                string    `json:"browse_uri"`
+	LinkURL                  string    `json:"link_url"`
+	MaxInvitesPerPerson      int       `json:"max_invites_per_person,omitempty"`
+	MaxInvitesAtEachLevel    []int     `json:"max_invites_at_each_level,omitempty"`
+	WotMinFollowedBy         Threshold `json:"wot_min_followed_by,omitempty"`
+	RequireCurrentTimestamp  bool      `json:"require_current_timestamp"`
+	AcceptScheduledEvents    bool      `json:"accept_scheduled_events"`
+	AllowAccessRequest       bool      `json:"allow_access_request"`
+	AllowEphemeralFromAnyone bool      `json:"allow_ephemeral_from_anyone"`
+	ValidateSchema           bool      `json:"validate_schema"`
 	Search                   struct {
 		Enable    bool     `json:"enable"`
 		Languages []string `json:"languages"`
@@ -64,10 +67,10 @@ type UserSettings struct {
 	AllowedKindsSpec string   `json:"allowed_kinds_spec,omitempty"`
 	Limits           Limits   `json:"limits"`
 
-	// Deprecated: remove this after people have migrated
+	// DEPRECATED: remove this after people have migrated
 	AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
 
-	// Deprecated: remove this after people have migrated
+	// DEPRECATED: remove this after people have migrated
 	MaxEventSize int `json:"max_event_size,omitempty"`
 
 	// per-relay
@@ -83,17 +86,21 @@ type UserSettings struct {
 		RelayMetadata
 	} `json:"favorites"`
 
+	Bookmarks struct {
+		RelayMetadata
+		AllAccess string `json:"all_access,omitempty"` // "public", "members", or "disabled"
+	} `json:"bookmarks"`
+
 	Inbox struct {
 		RelayMetadata
 		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
 		AllowedKindsSpec    string         `json:"allowed_kinds_spec,omitempty"`
 
-		// Deprecated: remove this after people have migrated
+		// DEPRECATED: remove this after people have migrated
 		AllowedKindsLegacy []nostr.Kind `json:"allowed_kinds,omitempty"`
 
 		HellthreadLimit  int    `json:"hellthread_limit"`
-		MinDMPoW         int    `json:"min_dm_pow"`
-		RequireAuthForDM string `json:"require_auth_for_dm,omitempty"` // "", "always", "when_no_pow"
+		RequireAuthForDM string `json:"require_auth_for_dm,omitempty"` // "", "always"
 	} `json:"inbox"`
 
 	Groups struct {
@@ -102,6 +109,10 @@ type UserSettings struct {
 		LiveKitServerURL       string `json:"livekit_server_url"`
 		LiveKitAPIKey          string `json:"livekit_apikey"`
 		LiveKitAPISecret       string `json:"livekit_apisecret"`
+		NIPAD                  struct {
+			Enabled bool              `json:"enabled"`
+			Names   map[string]string `json:"names"`
+		} `json:"nipad"`
 	} `json:"groups"`
 
 	Grasp struct {
@@ -132,20 +143,38 @@ type UserSettings struct {
 		BaseSecret string `json:"base_secret"`
 	} `json:"imgproxy"`
 
+	LinkPreview struct {
+		Enabled        bool     `json:"enabled"`
+		BaseSecret     string   `json:"base_secret"`
+		AllowedDomains []string `json:"allowed_domains,omitempty"`
+	} `json:"link_preview"`
+
 	Popular struct {
 		RelayMetadata
-		PercentThreshold int `json:"percent_threshold"`
+		Threshold Threshold `json:"threshold,omitempty"`
 	} `json:"popular"`
 
 	Uppermost struct {
 		RelayMetadata
-		PercentThreshold int `json:"percent_threshold"`
+		Threshold Threshold `json:"threshold,omitempty"`
 	} `json:"uppermost"`
 
 	Moderated struct {
 		RelayMetadata
-		MinPoW uint `json:"min_pow"`
+		ApprovalVotesSpec string `json:"approval_votes_spec,omitempty"`
 	} `json:"moderated"`
+
+	Network struct {
+		RelayMetadata
+	} `json:"network"`
+
+	// global web-of-trust service, used by the inbox, network and moderated relays
+	Wot struct {
+		HTTPBasePath string `json:"path"`
+
+		MinFollowedBy       Threshold      `json:"min_followed_by,omitempty"`
+		SpecificallyBlocked []nostr.PubKey `json:"specifically_blocked"`
+	} `json:"wot"`
 
 	FTP struct {
 		Enabled  bool   `json:"enabled"`
@@ -168,6 +197,60 @@ type Limits struct {
 	MaxIndexableTags       int `json:"max_indexable_tags"`
 	MaxEntriesInFollowList int `json:"max_entries_in_follow_list"`
 	MaxQueryLimit          int `json:"max_query_limit"`
+}
+
+type Threshold struct {
+	Absolute int
+	Percent  int
+}
+
+func (thre Threshold) Get(total int) int {
+	if thre.Absolute > 0 {
+		return thre.Absolute
+	}
+	return int(math.Ceil(float64(total) * float64(thre.Percent) / 100))
+}
+
+func (thre Threshold) Display() string {
+	if thre.Absolute > 0 {
+		return strconv.Itoa(thre.Absolute)
+	}
+	return fmt.Sprintf("%d%%", thre.Percent)
+}
+
+func (thre Threshold) MarshalJSON() ([]byte, error) {
+	if thre.Absolute > 0 {
+		return json.Marshal(thre.Absolute)
+	}
+	return json.Marshal(fmt.Sprintf("%d%%", thre.Percent))
+}
+
+func (thre *Threshold) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		return thre.FromString(s)
+	}
+	return thre.FromString(string(b))
+}
+
+func (thre *Threshold) FromString(s string) error {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, "%") {
+		pct, err := strconv.Atoi(strings.TrimSuffix(s, "%"))
+		if err != nil {
+			return fmt.Errorf("invalid threshold %q: %w", s, err)
+		}
+		thre.Percent = pct
+		thre.Absolute = 0
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("invalid threshold %q: %w", s, err)
+	}
+	thre.Absolute = n
+	thre.Percent = 0
+	return nil
 }
 
 type RelayMetadata struct {
@@ -204,6 +287,8 @@ func (rm RelayMetadata) GetDescription() string {
 		return "personal storage for each member. each member can only read and write their own events."
 	case "favorites":
 		return "relay members can manually republish notes here and they'll be saved."
+	case "bookmarks":
+		return "per-user bookmarking relay. each member gets a private database. the /all subpath shows the public aggregation of all member bookmarks."
 	case "inbox":
 		return "filtered notifications for relay members using unified web-of-trust filtering. only see mentions from people in the combined relay extended network."
 	case "popular":
@@ -212,6 +297,8 @@ func (rm RelayMetadata) GetDescription() string {
 		return "this is like popular, but with higher thresholds for reactions and it doesn't consider replies."
 	case "moderated":
 		return "the moderated relay is a public relay where events from non-members are reviewed by members before publication."
+	case "network":
+		return "anyone in the web-of-trust (the extended network of relay members and their follows) can write anything here. all kinds are accepted."
 	default:
 		return ""
 	}
@@ -237,7 +324,11 @@ func (rm RelayMetadata) GetPageURL() string {
 }
 
 func (us UserSettings) HTTPScheme() string {
-	if strings.HasPrefix(us.Domain, "127.0.0.1") || strings.HasPrefix(us.Domain, "0.0.0.0") || strings.HasPrefix(us.Domain, "localhost") {
+	// the domain may carry a port, which the suffix checks below would
+	// otherwise never match ("x.onion" does, "x.onion:3334" does not)
+	host, _, _ := strings.Cut(us.Domain, ":")
+
+	if strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "0.0.0.0") || strings.HasPrefix(host, "localhost") || strings.HasSuffix(host, "i2p") || strings.HasSuffix(host, "onion") || strings.HasSuffix(host, "fips") {
 		return "http://"
 	} else {
 		return "https://"
@@ -246,6 +337,18 @@ func (us UserSettings) HTTPScheme() string {
 
 func (us UserSettings) WSScheme() string {
 	return "ws" + us.HTTPScheme()[4:]
+}
+
+func (us UserSettings) IsValidDomain(domain string) bool {
+	if domain == us.Domain {
+		return true
+	}
+	for _, d := range us.AlternateDomains {
+		if domain == d {
+			return true
+		}
+	}
+	return false
 }
 
 func (us UserSettings) HasThemeColors() bool {
@@ -295,6 +398,7 @@ func loadUserSettings() error {
 		BrowseURI:               "https://jumble.social/?r={url}",
 		LinkURL:                 "nostr:{code}",
 		MaxInvitesPerPerson:     4,
+		WotMinFollowedBy:        Threshold{Absolute: 2},
 		RequireCurrentTimestamp: false,
 		Limits: Limits{
 			MaxEventSize:           10_000,
@@ -317,15 +421,20 @@ func loadUserSettings() error {
 	Settings.Personal.Enabled = true
 	Settings.Favorites.Enabled = true
 	Settings.Inbox.HellthreadLimit = 10
-	Settings.Popular.PercentThreshold = 20
-	Settings.Uppermost.PercentThreshold = 33
+	Settings.Popular.Threshold = Threshold{Percent: 5}
+	Settings.Uppermost.Threshold = Threshold{Percent: 10}
 	Settings.Internal.HTTPBasePath = "internal"
 	Settings.Personal.HTTPBasePath = "personal"
 	Settings.Favorites.HTTPBasePath = "favorites"
+	Settings.Bookmarks.HTTPBasePath = "bookmarks"
+	Settings.Bookmarks.AllAccess = "public"
 	Settings.Inbox.HTTPBasePath = "inbox"
 	Settings.Popular.HTTPBasePath = "popular"
 	Settings.Uppermost.HTTPBasePath = "uppermost"
 	Settings.Moderated.HTTPBasePath = "moderated"
+	Settings.Network.HTTPBasePath = "network"
+	Settings.Wot.HTTPBasePath = "wot"
+	Settings.Wot.SpecificallyBlocked = []nostr.PubKey{}
 
 	// Blossom settings
 	Settings.Blossom.MaxGroupMemberUploadSize = 1
@@ -345,6 +454,9 @@ func loadUserSettings() error {
 	// Imgproxy settings
 	Settings.Imgproxy.Enabled = false
 
+	// LinkPreview settings
+	Settings.LinkPreview.Enabled = false
+
 	// theme defaults
 	Settings.Theme.TextColor = "#ffffff"
 	Settings.Theme.SecondaryBackgroundColor = "#ffffff"
@@ -359,12 +471,16 @@ func loadUserSettings() error {
 	Settings.Internal.base = "internal"
 	Settings.Personal.base = "personal"
 	Settings.Favorites.base = "favorites"
+	Settings.Bookmarks.base = "bookmarks"
 	Settings.Popular.base = "popular"
 	Settings.Uppermost.base = "uppermost"
 	Settings.Moderated.base = "moderated"
-
+	Settings.Network.base = "network"
 	// nip05
 	Settings.NIP05.Names = make(map[string]nostr.PubKey)
+
+	// nip-ad group nicknames
+	Settings.Groups.NIPAD.Names = make(map[string]string)
 
 	path := getUserSettingsPath()
 	os.MkdirAll(filepath.Dir(path), 0700)
@@ -391,10 +507,50 @@ func loadUserSettings() error {
 	if err := json.Unmarshal(data, &Settings); err != nil {
 		return err
 	}
+
+	// migrate settings that used to live elsewhere into the global wot service
+	// DEPRECATED: delete this once everybody has migrated
+	if Settings.Wot.MinFollowedBy.Absolute == 0 && Settings.Wot.MinFollowedBy.Percent == 0 {
+		Settings.Wot.MinFollowedBy = Settings.WotMinFollowedBy
+	}
+	if len(Settings.Wot.SpecificallyBlocked) == 0 && len(Settings.Inbox.SpecificallyBlocked) > 0 {
+		Settings.Wot.SpecificallyBlocked = Settings.Inbox.SpecificallyBlocked
+	}
+
 	var loadedSettings map[string]json.RawMessage
 	if err := json.Unmarshal(data, &loadedSettings); err == nil {
 		if _, ok := loadedSettings["allow_access_request"]; !ok {
 			Settings.AllowAccessRequest = true
+		}
+	}
+
+	// DEPRECATED: get rid of this once everybody has migrated
+	if _, err := os.Stat(filepath.Join(S.DataPath, "migrated_thresholds")); os.IsNotExist(err) {
+		if section, ok := loadedSettings["popular"]; ok {
+			var values map[string]json.RawMessage
+			json.Unmarshal(section, &values)
+			if raw, ok := values["percent_threshold"]; ok {
+				var pct int
+				if json.Unmarshal(raw, &pct) == nil {
+					Settings.Popular.Threshold = Threshold{Percent: pct}
+				}
+			}
+		}
+		if section, ok := loadedSettings["uppermost"]; ok {
+			var values map[string]json.RawMessage
+			json.Unmarshal(section, &values)
+			if raw, ok := values["percent_threshold"]; ok {
+				var pct int
+				if json.Unmarshal(raw, &pct) == nil {
+					Settings.Uppermost.Threshold = Threshold{Percent: pct}
+				}
+			}
+		}
+		if err := os.WriteFile(filepath.Join(S.DataPath, "migrated_thresholds"), nil, 0644); err != nil {
+			Log.Warn().Err(err).Msg("failed to write migrated_thresholds marker file, will retry on next startup")
+		}
+		if err := SaveUserSettings(); err != nil {
+			return fmt.Errorf("failed to save settings after threshold migration: %w", err)
 		}
 	}
 

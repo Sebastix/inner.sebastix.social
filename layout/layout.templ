@@ -55,7 +55,7 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 			}
 			<link rel="stylesheet" href="/static/styles.css"/>
 			<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-			<script src="https://cdn.jsdelivr.net/npm/nostr-web-components/dist/index.js"></script>
+			<script src="https://cdn.jsdelivr.net/npm/nostr-web-components@0.2.4/dist/index.js"></script>
 		</head>
 		<body
 			class="min-h-screen flex flex-col themed:bg-[var(--bg-color)] themed:text-[var(--base-color)] themed:font-[family-name:var(--secondary-font)] light:bg-stone-50 dark:bg-stone-900 light:text-stone-900 dark:text-stone-100"
@@ -108,8 +108,8 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 							<button
 								@click="open = !open"
 								class={ "cursor-pointer rounded-lg px-4 py-2 font-medium flex items-center gap-1 themed:text-[var(--text-color)] themed:hover:bg-[rgb(from_var(--text-color)_r_g_b_/10%)] light:hover:bg-stone-100 dark:hover:bg-stone-700",
-                                    templ.KV("themed:bg-[rgb(from_var(--text-color)_r_g_b_/15%)] light:bg-stone-200 dark:bg-stone-700", currentPage == "groups" || currentPage == "grasp" || currentPage == "blossom" || currentPage == "nsite" || currentPage == "paywall" || currentPage == "stream" || currentPage == "operator" || currentPage == "imgproxy"),
-                                    templ.KV("hidden", !(global.Settings.Groups.Enabled || global.Settings.Grasp.Enabled || global.Settings.Blossom.Enabled || global.Settings.Nsite.Enabled || global.Settings.Paywall.Enabled || global.Settings.Stream.Enabled || global.Settings.Operator.Enabled || (global.Settings.Domain != "" && global.Settings.Imgproxy.Enabled) || pyramid.IsRoot(loggedUser))) }
+                                    templ.KV("themed:bg-[rgb(from_var(--text-color)_r_g_b_/15%)] light:bg-stone-200 dark:bg-stone-700", currentPage == "groups" || currentPage == "grasp" || currentPage == "blossom" || currentPage == "nsite" || currentPage == "paywall" || currentPage == "stream" || currentPage == "operator" || currentPage == "imgproxy" || currentPage == "linkpreview" || currentPage == "wot"),
+                                    templ.KV("hidden", !(global.Settings.Groups.Enabled || global.Settings.Grasp.Enabled || global.Settings.Blossom.Enabled || global.Settings.Nsite.Enabled || global.Settings.Paywall.Enabled || global.Settings.Stream.Enabled || global.Settings.Operator.Enabled || (global.Settings.Domain != "" && global.Settings.Imgproxy.Enabled) || (global.Settings.Domain != "" && global.Settings.LinkPreview.Enabled) || pyramid.IsRoot(loggedUser))) }
 							>
 								switch currentPage {
 									case "groups":
@@ -128,6 +128,10 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 										operator
 									case "imgproxy":
 										imgproxy
+									case "linkpreview":
+										linkpreview
+									case "wot":
+										wot
 									default:
 										services
 								}
@@ -180,6 +184,14 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 										imgproxy
 									}
 								}
+								if global.Settings.Domain != "" && (global.Settings.LinkPreview.Enabled || pyramid.IsRoot(loggedUser)) {
+									@NavLink("/linkpreview/", currentPage == "linkpreview") {
+										linkpreview
+									}
+								}
+								@NavLink("/wot/", currentPage == "wot") {
+									wot
+								}
 							</div>
 						</div>
 						<div
@@ -190,18 +202,22 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 							<button
 								@click="open = !open"
 								class={ "cursor-pointer rounded-lg px-4 py-2 font-medium flex items-center gap-1 themed:text-[var(--text-color)] themed:hover:bg-[rgb(from_var(--text-color)_r_g_b_/10%)] light:hover:bg-stone-100 dark:hover:bg-stone-700",
-                                    templ.KV("themed:bg-[rgb(from_var(--text-color)_r_g_b_/15%)] light:bg-stone-200 dark:bg-stone-700", currentPage == "favorites" || currentPage == "uppermost" || currentPage == "popular" || currentPage == "inbox" || currentPage == "internal" || currentPage == "moderated"),
-                                    templ.KV("hidden", !pyramid.IsRoot(loggedUser) && !global.Settings.Favorites.Enabled && !global.Settings.Uppermost.Enabled && !global.Settings.Popular.Enabled && !global.Settings.Inbox.Enabled && !(global.Settings.Internal.Enabled && pyramid.IsMember(loggedUser)) && !(global.Settings.Personal.Enabled && pyramid.IsMember(loggedUser)) && !global.Settings.Moderated.Enabled ) }
+                                    templ.KV("themed:bg-[rgb(from_var(--text-color)_r_g_b_/15%)] light:bg-stone-200 dark:bg-stone-700", currentPage == "favorites" || currentPage == "bookmarks" || currentPage == "uppermost" || currentPage == "popular" || currentPage == "inbox" || currentPage == "internal" || currentPage == "moderated" || currentPage == "network"),
+                                    templ.KV("hidden", !pyramid.IsRoot(loggedUser) && !global.Settings.Favorites.Enabled && !global.Settings.Bookmarks.Enabled && !global.Settings.Uppermost.Enabled && !global.Settings.Popular.Enabled && !global.Settings.Inbox.Enabled && !global.Settings.Network.Enabled && !(global.Settings.Internal.Enabled && pyramid.IsMember(loggedUser)) && !(global.Settings.Personal.Enabled && pyramid.IsMember(loggedUser)) && !global.Settings.Moderated.Enabled ) }
 							>
 								switch currentPage {
 									case string(global.RelayFavorites):
 										{ global.Settings.Favorites.HTTPBasePath }
+									case string(global.RelayBookmarks):
+										{ global.Settings.Bookmarks.HTTPBasePath }
 									case string(global.RelayUppermost):
 										{ global.Settings.Uppermost.HTTPBasePath }
 									case string(global.RelayPopular):
 										{ global.Settings.Popular.HTTPBasePath }
 									case string(global.RelayInbox):
 										{ global.Settings.Inbox.HTTPBasePath }
+									case string(global.RelayNetwork):
+										{ global.Settings.Network.HTTPBasePath }
 									case string(global.RelayInternal):
 										{ global.Settings.Internal.HTTPBasePath }
 									case string(global.RelayPersonal):
@@ -220,7 +236,7 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 								x-transition
 								class="absolute left-0 mt-2 w-48 bg-white dark:bg-stone-800 rounded-lg shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50 themed:bg-[rgb(from_var(--secondary-bg-color)_r_g_b_/_var(--header-transparency))] light:bg-white/60 dark:bg-stone-800/90"
 							>
-								for _, page := range []global.RelayID{global.RelayInternal, global.RelayInbox, global.RelayModerated, global.RelayFavorites, global.RelayPopular, global.RelayUppermost, global.RelayPersonal} {
+								for _, page := range []global.RelayID{global.RelayInternal, global.RelayInbox, global.RelayNetwork, global.RelayModerated, global.RelayFavorites, global.RelayBookmarks, global.RelayPopular, global.RelayUppermost, global.RelayPersonal} {
 									{{ var path string }}
 									{{ var enabled bool }}
 									{{
@@ -234,12 +250,18 @@ templ Layout(loggedUser nostr.PubKey, currentPage string) {
 										case global.RelayInbox:
 											path = global.Settings.Inbox.HTTPBasePath
 											enabled = global.Settings.Inbox.Enabled
+										case global.RelayNetwork:
+											path = global.Settings.Network.HTTPBasePath
+											enabled = global.Settings.Network.Enabled
 										case global.RelayModerated:
 											path = global.Settings.Moderated.HTTPBasePath
 											enabled = global.Settings.Moderated.Enabled
 										case global.RelayFavorites:
 											path = global.Settings.Favorites.HTTPBasePath
 											enabled = global.Settings.Favorites.Enabled
+										case global.RelayBookmarks:
+											path = global.Settings.Bookmarks.HTTPBasePath
+											enabled = global.Settings.Bookmarks.Enabled
 										case global.RelayPopular:
 											path = global.Settings.Popular.HTTPBasePath
 											enabled = global.Settings.Popular.Enabled

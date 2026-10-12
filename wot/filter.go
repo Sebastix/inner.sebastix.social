@@ -18,6 +18,30 @@ import (
 
 var log = global.Log.With().Str("module", "wot").Logger()
 
+// RejectAuthor is the shared rejection policy for events written to
+// relays whose write access is gated by the web-of-trust (inbox, network,
+// moderated): the author must not be specifically blocked and must be a
+// relay member or inside the aggregated web-of-trust.
+func RejectAuthor(pk nostr.PubKey) (reject bool, msg string) {
+	if slices.Contains(global.Settings.Wot.SpecificallyBlocked, pk) {
+		return true, "blocked: you are blocked"
+	}
+
+	if pyramid.IsMember(pk) {
+		return false, ""
+	}
+
+	if !IsComputed() {
+		return true, "blocked: wot still being computed, wait some minutes"
+	}
+
+	if !Contains(pk) {
+		return true, "blocked: you're not in the extended network of this relay"
+	}
+
+	return false, ""
+}
+
 type XorFilter struct {
 	Items int
 	xorfilter.Xor8
@@ -44,12 +68,14 @@ func ComputeAggregated(ctx context.Context) (XorFilter, error) {
 	}
 
 	queue := xsync.NewMapOf[nostr.PubKey, struct{}](xsync.WithPresize(len(members) * 200))
+	followedBy := make(map[nostr.PubKey]int)
+	var followedByMu sync.Mutex
 	wg := sync.WaitGroup{}
 	sem := semaphore.NewWeighted(15)
 
 	log.Info().Int("n", len(members)).Msg("fetching primary follow lists for members")
 	for _, member := range members {
-		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, member) {
+		if slices.Contains(global.Settings.Wot.SpecificallyBlocked, member) {
 			continue
 		}
 
@@ -62,26 +88,36 @@ func ComputeAggregated(ctx context.Context) (XorFilter, error) {
 			defer cancel()
 			defer sem.Release(1)
 
+			seen := make(map[nostr.PubKey]struct{})
 			for _, f := range global.Nostr.FetchFollowList(ctx, member).Items {
-				if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, f.Pubkey) {
+				if slices.Contains(global.Settings.Wot.SpecificallyBlocked, f.Pubkey) {
 					continue
 				}
 
+				if _, ok := seen[f.Pubkey]; ok {
+					continue
+				}
+				seen[f.Pubkey] = struct{}{}
+				followedByMu.Lock()
+				followedBy[f.Pubkey]++
+				followedByMu.Unlock()
 				queue.Store(f.Pubkey, struct{}{})
 			}
 		})
 	}
 
 	wg.Wait()
+	minFollowedBy := global.Settings.Wot.MinFollowedBy.Get(len(members))
 
 	res := make(chan nostr.PubKey)
 	all := sync.WaitGroup{}
 
 	log.Info().Int("n", queue.Size()).Msg("fetching secondary follow lists for follows")
 	for user := range queue.Range {
-		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, user) {
+		if slices.Contains(global.Settings.Wot.SpecificallyBlocked, user) {
 			continue
 		}
+		includeFollows := followedBy[user] >= minFollowedBy
 
 		all.Add(1)
 		go func() {
@@ -94,13 +130,19 @@ func ComputeAggregated(ctx context.Context) (XorFilter, error) {
 			go func() {
 				ctx, cancel := context.WithTimeout(ctx, time.Second*7)
 				defer cancel()
+				if !includeFollows {
+					res <- user
+					sem.Release(1)
+					all.Done()
+					return
+				}
 
 				fl := global.Nostr.FetchFollowList(ctx, user).Items
 				sem.Release(1)
 
 				res <- user
 				for _, f := range fl {
-					if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, f.Pubkey) {
+					if slices.Contains(global.Settings.Wot.SpecificallyBlocked, f.Pubkey) {
 						continue
 					}
 					res <- f.Pubkey
@@ -122,7 +164,7 @@ func makeFilter(m chan nostr.PubKey) XorFilter {
 	shids := make([]uint64, 0, 60000)
 	shidMap := make(map[uint64]struct{}, 60000)
 	for pk := range m {
-		if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, pk) {
+		if slices.Contains(global.Settings.Wot.SpecificallyBlocked, pk) {
 			continue
 		}
 

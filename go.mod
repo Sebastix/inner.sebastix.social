@@ -3,12 +3,13 @@ module github.com/fiatjaf/pyramid
 go 1.26.2
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260701134336-94cc8043858a
+	fiatjaf.com/nostr v0.0.0-20260916040958-27e395a0f6e7
 	fiatjaf.com/pomegranate v0.0.0-20260515185713-4cdb7e027855
 	fiatjaf.com/promenade v0.4.4
 	github.com/FastFilter/xorfilter v0.2.1
 	github.com/a-h/templ v0.3.1020
 	github.com/bep/debounce v1.2.1
+	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/blevesearch/bleve/v2 v2.4.4
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/buildkite/terminal-to-html/v3 v3.16.8
@@ -28,6 +29,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.48.0
+	golang.org/x/net v0.51.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.19.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -47,7 +49,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bits-and-blooms/bitset v1.17.0 // indirect
+	github.com/bits-and-blooms/bitset v1.24.2 // indirect
 	github.com/blevesearch/bleve_index_api v1.1.12 // indirect
 	github.com/blevesearch/geo v0.1.20 // indirect
 	github.com/blevesearch/go-faiss v1.0.24 // indirect
@@ -177,7 +179,6 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/image v0.24.0 // indirect
-	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect

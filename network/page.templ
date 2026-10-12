@@ -1,0 +1,49 @@
+package network
+
+import (
+	"fiatjaf.com/nostr"
+
+	"github.com/fiatjaf/pyramid/global"
+	"github.com/fiatjaf/pyramid/layout"
+	"github.com/fiatjaf/pyramid/pyramid"
+)
+
+templ networkPage(loggedUser nostr.PubKey) {
+	@layout.Layout(loggedUser, "network") {
+		<div class="flex items-center justify-between mb-4">
+			<div class="flex items-center">
+				if !global.Settings.Network.IsIconDefault() {
+					<img src={ global.Settings.Network.GetIcon() } class="h-8 w-8 mr-2"/>
+				}
+				<h1 class="text-4xl font-bold font-[family-name:var(--primary-font)]">{ global.Settings.Network.GetName() }</h1>
+			</div>
+			if global.Settings.Network.Enabled && pyramid.IsRoot(loggedUser) {
+				@layout.LandlubberButton(global.Settings.Network.HTTPBasePath)
+			}
+		</div>
+		<div class="space-y-4 text-gray-700 dark:text-gray-300">
+			<p class="text-lg leading-relaxed">{ global.Settings.Network.GetDescription() }</p>
+			<div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+				<h2 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">how the network relay works:</h2>
+				<ul class="list-disc list-inside space-y-1 text-sm">
+					<li>any kind can be written here</li>
+					<li>writes come only from authenticated pubkeys that are members or in the aggregated <a href="/wot/" class="text-blue-600 dark:text-blue-400 themed:text-[var(--accent-color)] hover:underline">web-of-trust</a></li>
+					<li>read access is public</li>
+				</ul>
+			</div>
+			if global.Settings.Network.Enabled {
+				<a
+					class="mb-4 inline-flex items-center gap-2 px-2 py-1 text-blue-600 dark:text-blue-400 hover:underline themed:text-[var(--accent-color)]"
+					target="_blank"
+					href={ global.Settings.BrowseURI }
+					x-init="$el.href = $el.href.replace(/({|%7B)url(}|%7D)/, encodeURIComponent(location.href.replace('http', 'ws').split('/').slice(0, 4).join('/')))"
+				>
+					browse network →
+				</a>
+			}
+			if pyramid.IsRoot(loggedUser) {
+				@layout.SubRelaySettings(global.RelayNetwork, global.Settings.Network.Enabled, global.Settings.Network.Name, global.Settings.Network.Description, global.Settings.Network.Icon, global.Settings.Network.Pinned, global.Settings.Network.HTTPBasePath, global.Settings.Network.HTTPDomain)
+			}
+		</div>
+	}
+}

@@ -2,13 +2,11 @@ package inbox
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
-	"fiatjaf.com/nostr/nip13"
 	"fiatjaf.com/nostr/nip61"
 	"github.com/fiatjaf/pyramid/global"
 	"github.com/fiatjaf/pyramid/pyramid"
@@ -78,6 +76,10 @@ func rejectFilter(ctx context.Context, filter nostr.Filter) (bool, string) {
 }
 
 func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
+	if evt.Kind == 1984 {
+		return rejectReport(evt)
+	}
+
 	// if this is a deletion event, check if it tags events that exist in our stores
 	if evt.Kind == 5 {
 		del := evt
@@ -94,7 +96,8 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 					found = evt
 					break
 				}
-				if found.ID != nostr.ZeroID {
+				if found.ID == nostr.ZeroID {
+					// not in the inbox store, try the secret store too
 					for evt := range global.IL.Secret.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
 						found = evt
 						break
@@ -117,11 +120,13 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 	// count p-tags and check if they tag pyramid members
 	pTagCount := 0
 	PTagCount := 0
-	tagsPyramidMember := false
+	noAcceptableTargets := true
 	sender := evt.PubKey
 
 	for _, tag := range evt.Tags {
 		if len(tag) >= 2 {
+			var member nostr.PubKey
+
 			if tag[0] == "p" {
 				pTagCount++
 
@@ -131,7 +136,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 				}
 
 				if pyramid.IsMember(pubkey) {
-					tagsPyramidMember = true
+					member = pubkey
 				}
 			} else if tag[0] == "P" {
 				PTagCount++
@@ -145,17 +150,25 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 				case 1111, 1244:
 					// in this case the 'P' is kinda like the 'p'
 					if pyramid.IsMember(pubkey) {
-						tagsPyramidMember = true
+						member = pubkey
 					}
 				case 9735:
 					// in this case the 'P' is the original author
 					sender = pubkey
 				}
+			} else {
+				continue
+			}
+
+			// we got a p-tag to a member, now check if that member hasn't specifically flagged the author
+			if !isBannedByMember(member, evt.PubKey) {
+				// it's not banned by this, so this message has at least one acceptable target
+				noAcceptableTargets = false
 			}
 		}
 	}
 
-	if !tagsPyramidMember {
+	if noAcceptableTargets {
 		return true, "blocked: event must tag at least one pyramid relay member"
 	}
 
@@ -166,36 +179,29 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 
 	if slices.Contains(secretKinds, evt.Kind) {
 		// here are DM messages, they come from random pubkeys
-		// we may require either PoW, AUTH (and WoT check), at least one of the two, or both, or nothing
-
-		var powRejection string
-		if global.Settings.Inbox.MinDMPoW > 0 {
-			if pow := nip13.CommittedDifficulty(evt); pow < global.Settings.Inbox.MinDMPoW {
-				powRejection = fmt.Sprintf("pow: insufficient pow, got %d, needed %d",
-					pow, global.Settings.Inbox.MinDMPoW)
-			}
+		// they are filtered by web-of-trust; requiring the (stronger) AUTH
+		// check is an option set by the relay owner
+		if !wot.IsComputed() {
+			return true, "blocked: wot still being computed, wait"
 		}
 
-		if global.Settings.Inbox.RequireAuthForDM == "always" ||
-			(global.Settings.Inbox.RequireAuthForDM == "when_no_pow" && global.Settings.Inbox.MinDMPoW == 0) ||
-			(global.Settings.Inbox.RequireAuthForDM == "when_no_pow" && powRejection != "") {
+		if !wot.Contains(sender) {
+			return true, "blocked: you're not in the extended network of this relay"
+		}
 
+		if global.Settings.Inbox.RequireAuthForDM == "always" {
 			for _, pk := range khatru.GetAllAuthed(ctx) {
 				// at least one authenticated pubkey is in the wot
-				if wot.Current.Contains(pk) {
+				if wot.Contains(pk) {
 					return false, ""
 				}
 			}
 
 			// AUTH was required and failed
 			return true, "auth-required: must authenticate to send DMs to this relay"
-		} else if powRejection != "" {
-			// AUTH wasn't required, pow failed
-			return true, powRejection
-		} else {
-			// pow check succeeded or wasn't required and AUTH wasn't required either
-			return false, ""
 		}
+
+		return false, ""
 	}
 
 	// here are normal mentions
@@ -203,8 +209,20 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 		return true, "blocked: event kind not allowed"
 	}
 
-	if slices.Contains(global.Settings.Inbox.SpecificallyBlocked, evt.PubKey) {
-		return true, "blocked: you are blocked"
+	// ensure this comes from someone in the relay combined extended network
+	bannedByAll := true
+	for member := range pyramid.Members.Range {
+		if !isBannedByMember(member, evt.PubKey) {
+			bannedByAll = false
+			break
+		}
+	}
+	if !pyramid.IsMember(sender) && bannedByAll {
+		return true, "blocked: you're filtered out on this relay"
+	}
+
+	if reject, msg := wot.RejectAuthor(sender); reject {
+		return reject, msg
 	}
 
 	if slices.Contains([]nostr.Kind{9735, 9321}, evt.Kind) {
@@ -222,6 +240,7 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 			if evt.PubKey != global.Nostr.FetchZapProvider(zctx, receiver) {
 				return true, "this came from an invalid zap provider"
 			}
+
 			return false, ""
 		case 9321:
 			// check nutzap validity
@@ -252,16 +271,6 @@ func rejectEvent(ctx context.Context, evt nostr.Event) (bool, string) {
 		default:
 			return true, "unexpected money kind"
 		}
-	}
-
-	// ensure this comes from someone in the relay combined extended network
-	if !wot.Current.Contains(sender) {
-		if evt.Kind == 9735 && sender == evt.PubKey {
-			// we'll make an exception for zap providers that do not include the "P" temporarily
-			return false, ""
-		}
-
-		return true, "blocked: you're not in the extended network of this relay"
 	}
 
 	return false, ""
